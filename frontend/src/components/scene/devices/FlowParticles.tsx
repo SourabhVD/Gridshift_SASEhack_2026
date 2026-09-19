@@ -18,7 +18,14 @@
  * Positions come from a 65-point lookup taken off each curve once
  * (`getSpacedPoints`) and lerped -- `curve.getPointAt` per particle per frame
  * would re-walk the arc-length table 200 times a frame. The lookups are cached
- * against the curve itself, so a colour or flow change costs nothing.
+ * against the curve itself, so a colour or flow change costs nothing. The lookup
+ * and its sampler are exported, because the approve pulse rides the same table.
+ *
+ * A stream's colour is a target rather than a setting: the instance colours walk
+ * to it over SETTLE_MS, so the grid's red -> green on an approved plan settles
+ * on the beads at the same rate as on the tube they run inside. The write is
+ * skipped entirely on the frames where nothing is converging, which is almost
+ * all of them.
  *
  * Every temporary is hoisted; the frame loop allocates nothing.
  */
@@ -33,6 +40,7 @@ import {
   Object3D,
   Vector3,
 } from 'three';
+import { settle, usePrefersReducedMotion } from './ApprovePulse';
 import { MAX_PARTICLES, glow } from './common';
 
 const SCRATCH = new Object3D();
@@ -40,10 +48,13 @@ const POINT = new Vector3();
 const TINT = new Color();
 const PARKED = new Vector3(0, -1000, 0);
 
+/** Below this the walk is over and the colour is snapped to its target. */
+const COLOR_EPSILON = 0.002;
+
 /** Arc-length lookups, cached against the curve so re-renders are free. */
 const LOOKUPS = new WeakMap<CatmullRomCurve3, Vector3[]>();
 
-function lookupFor(curve: CatmullRomCurve3): Vector3[] {
+export function lookupFor(curve: CatmullRomCurve3): Vector3[] {
   let points = LOOKUPS.get(curve);
   if (!points) {
     points = curve.getSpacedPoints(64);
@@ -53,7 +64,7 @@ function lookupFor(curve: CatmullRomCurve3): Vector3[] {
 }
 
 /** Sample the precomputed polyline at u in [0,1]. */
-function sample(points: readonly Vector3[], u: number, out: Vector3): void {
+export function sample(points: readonly Vector3[], u: number, out: Vector3): void {
   const f = u * (points.length - 1);
   const i0 = Math.floor(f);
   const i1 = Math.min(points.length - 1, i0 + 1);
@@ -80,12 +91,19 @@ export interface FlowParticlesProps {
 export function FlowParticles({ streams }: FlowParticlesProps) {
   const ref = useRef<InstancedMesh>(null);
   const capacity = Math.max(1, streams.length * MAX_PARTICLES);
+  const reduced = usePrefersReducedMotion();
+
+  /** What each stream is showing right now, as opposed to what it is heading for. */
+  const shown = useRef<Color[]>([]);
 
   useLayoutEffect(() => {
     const mesh = ref.current;
     if (!mesh) return;
     for (let s = 0; s < streams.length; s++) {
-      TINT.copy(glow(streams[s].color));
+      // A stream seen for the first time starts at its own colour; one that has
+      // been on screen keeps whatever it had, and the frame loop walks it over.
+      if (!shown.current[s]) shown.current[s] = new Color().copy(glow(streams[s].color));
+      TINT.copy(shown.current[s]);
       for (let i = 0; i < MAX_PARTICLES; i++) {
         mesh.setColorAt(s * MAX_PARTICLES + i, TINT);
       }
@@ -95,7 +113,7 @@ export function FlowParticles({ streams }: FlowParticlesProps) {
 
   /* r3f re-registers this callback on every render, so closing over `streams`
    * directly always sees the current set. */
-  useFrame((state) => {
+  useFrame((state, delta) => {
     const mesh = ref.current;
     if (!mesh) return;
     const t = state.clock.elapsedTime;
@@ -126,6 +144,32 @@ export function FlowParticles({ streams }: FlowParticlesProps) {
     }
     mesh.count = streams.length * MAX_PARTICLES;
     mesh.instanceMatrix.needsUpdate = true;
+
+    /* Colour walk. Only the streams still converging are written, so an idle
+       site pays one distance check per conduit per frame and nothing else. */
+    const alpha = reduced ? 1 : settle(delta);
+    if (alpha <= 0) return;
+
+    let repaint = false;
+    for (let s = 0; s < streams.length; s++) {
+      const current = shown.current[s];
+      if (!current) continue;
+      const want = glow(streams[s].color);
+      const distance =
+        Math.abs(current.r - want.r) +
+        Math.abs(current.g - want.g) +
+        Math.abs(current.b - want.b);
+      if (distance < COLOR_EPSILON) continue;
+
+      if (alpha >= 1 || distance < COLOR_EPSILON * 4) current.copy(want);
+      else current.lerp(want, alpha);
+
+      TINT.copy(current);
+      const base = s * MAX_PARTICLES;
+      for (let i = 0; i < MAX_PARTICLES; i++) mesh.setColorAt(base + i, TINT);
+      repaint = true;
+    }
+    if (repaint && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
   });
 
   return (

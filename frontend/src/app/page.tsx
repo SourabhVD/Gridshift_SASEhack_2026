@@ -19,6 +19,17 @@
  * the first paint of the session. `main` is keyed on the building, so without
  * the latch below every site switch would replay the entrance -- which the
  * motion study calls out as reading like a bug.
+ *
+ * Two narrative beats are mounted here rather than inside a panel, because both
+ * are about the page as a whole:
+ *
+ *   cold open   `useColdOpen()` walks the scrubber to the peak hour once per
+ *               session, ~1s after the stagger settles.
+ *   run moment  while the agent is working, `data-run="live"` on <main> dims
+ *               the regions nobody should be reading yet. The rule lives in
+ *               globals.css; the wrappers below carry `data-quiet`. The KPI
+ *               strip is deliberately NOT one of them -- those five numbers are
+ *               the only thing readable from the back of a room.
  */
 
 import { useEffect, useState, type CSSProperties } from 'react';
@@ -36,6 +47,7 @@ import { TimelinePanel } from '@/components/TimelinePanel';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { useGridShift } from '@/lib/store';
+import { useColdOpen } from '@/lib/useColdOpen';
 
 /** Module-level, so the entrance runs once per page load and never again. */
 let hasPlayedEntrance = false;
@@ -44,8 +56,10 @@ let hasPlayedEntrance = false;
 const ENTRANCE_MS = 900;
 
 export default function Page() {
-  const { forecast, buildingId, isMock, isLoading, reset } = useGridShift();
+  const { forecast, buildingId, isMock, isLoading, runStatus, reset } = useGridShift();
   const hasPeak = forecast?.points.some((pt) => pt.is_peak) ?? false;
+
+  useColdOpen();
 
   const [entrance, setEntrance] = useState(!hasPlayedEntrance);
 
@@ -100,6 +114,7 @@ export default function Page() {
 
       <main
         key={buildingId}
+        data-run={runStatus === 'running' ? 'live' : undefined}
         className="mx-auto max-w-[1600px] px-6 pt-8 pb-16 sm:pt-10"
       >
         {/* 24px between the two halves of a row; 32px between sections on a
@@ -140,17 +155,17 @@ export default function Page() {
 
           {/* Row 5 -- demand chart 2/3, impact 1/3 */}
           <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-2', riseClass)}
-              style={riseStyle(4)}>
+              style={riseStyle(4)} data-quiet>
             <DemandChart />
           </div>
           <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-1', riseClass)}
-              style={riseStyle(4)}>
+              style={riseStyle(4)} data-quiet>
             <ImpactChart />
           </div>
 
           {/* Row 6 -- full width */}
           <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-3', riseClass)}
-              style={riseStyle(4)}>
+              style={riseStyle(4)} data-quiet>
             <ActionPlan />
           </div>
         </div>

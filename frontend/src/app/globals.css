@@ -171,11 +171,39 @@
   font-variant-numeric: tabular-nums;
 }
 
+/**
+ * The run moment. While the agent is working, `page.tsx` puts data-run="live"
+ * on <main> and the regions marked [data-quiet] -- the two charts and the action
+ * plan -- step back into the dark. The scene, the agent log, the peak alert row,
+ * the scrubber and the KPI strip stay at full ink: they are what the run is
+ * about, and on a projector 42 % of an already-crushed value is nothing.
+ *
+ * Opacity and filter only, so this is a compositor job and the page cannot
+ * shift under it.
+ */
+[data-quiet] {
+  transition:
+    opacity var(--dur) var(--ease),
+    filter var(--dur) var(--ease);
+}
+
+main[data-run='live'] [data-quiet] {
+  opacity: 0.42;
+  filter: saturate(0.55);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
   *::after {
     animation: none !important;
     transition: none !important;
+  }
+
+  /* The hierarchy still has to read; it just arrives instead of fading, and it
+     stops short of a dim that would be hard to recover from without motion. */
+  main[data-run='live'] [data-quiet] {
+    opacity: 0.7;
+    filter: none;
   }
 }

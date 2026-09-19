@@ -16,10 +16,25 @@
  * tube is a slightly glossy sheath (roughness 0.35) with only enough emissive
  * to keep its colour legible in shadow -- well under the composer's 1.05 cut,
  * so the conduit itself never blooms and the beads stand out against it.
+ *
+ * ## Colour
+ *
+ * `color` is a target, not a setting. The material walks to it inside the frame
+ * loop over SETTLE_MS rather than being re-applied on render, so the grid's
+ * red -> green on an approved plan is a settle and not a cut -- and, because it
+ * happens on the material the mesh already owns, nothing is rebuilt or
+ * remounted to do it. Under reduced motion the walk collapses to a snap.
  */
 
-import { useEffect, useMemo } from 'react';
-import { type CatmullRomCurve3, TubeGeometry } from 'three';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useFrame } from '@react-three/fiber';
+import {
+  type CatmullRomCurve3,
+  Color,
+  type MeshStandardMaterial,
+  TubeGeometry,
+} from 'three';
+import { settle, usePrefersReducedMotion } from './ApprovePulse';
 import { DORMANT_KW, MAX_PARTICLES, RADIUS_BUCKETS, clamp } from './common';
 
 /** Everything both the tube and its particle stream need to agree about. */
@@ -68,13 +83,42 @@ export function Conduit({ curve, scale, color }: ConduitProps) {
   );
   useEffect(() => () => geometry.dispose(), [geometry]);
 
+  const material = useRef<MeshStandardMaterial>(null);
+  const target = useMemo(() => new Color(color), [color]);
+  const reduced = usePrefersReducedMotion();
+
+  /* First paint is not a transition: the run starts at its own colour. */
+  const seeded = useRef(false);
+  useLayoutEffect(() => {
+    const mat = material.current;
+    if (!mat || seeded.current) return;
+    seeded.current = true;
+    mat.color.copy(target);
+    mat.emissive.copy(target);
+  }, [target]);
+
+  useFrame((_, delta) => {
+    const mat = material.current;
+    if (!mat) return;
+    if (reduced) {
+      mat.color.copy(target);
+      mat.emissive.copy(target);
+      return;
+    }
+    const alpha = settle(delta);
+    if (alpha <= 0) return;
+    mat.color.lerp(target, alpha);
+    mat.emissive.lerp(target, alpha);
+  });
+
   return (
     /* Not a pick target: only devices and the building answer the pointer, so
        the tube is excluded from the raycast outright. */
     <mesh geometry={geometry} castShadow receiveShadow raycast={() => null}>
+      {/* No `color` / `emissive` props: they are driven from the frame loop
+          above, and re-applying them on every store tick would undo the lerp. */}
       <meshStandardMaterial
-        color={color}
-        emissive={color}
+        ref={material}
         emissiveIntensity={0.22}
         roughness={0.35}
         metalness={0.25}

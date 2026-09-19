@@ -18,11 +18,13 @@
  * the whole lattice as one InstancedMesh, ceramics, conductors. Residence 3.
  */
 
-import { useMemo } from 'react';
+import { useLayoutEffect, useMemo, useRef, type ComponentRef } from 'react';
 import { Line } from '@react-three/drei';
-import { CatmullRomCurve3, Vector3 } from 'three';
+import { useFrame } from '@react-three/fiber';
+import { CatmullRomCurve3, Color, Vector3 } from 'three';
 import type { BuildingType } from '@/types/api';
 import { formatKw } from '@/lib/format';
+import { settle, usePrefersReducedMotion } from './ApprovePulse';
 import { C, MAT, isResidence } from './common';
 import { Boxes, Cylinders, RoundedBoxes, type Piece } from './Instanced';
 import { NodeLabel } from './NodeLabel';
@@ -196,6 +198,9 @@ function sagSpan(a: Vector3, b: Vector3, sag: number, samples = 20): Vector3[] {
   return new CatmullRomCurve3(control, false, 'centripetal', 0.5).getPoints(samples);
 }
 
+/** Bare aluminium: the conductors' resting colour, dark against the sky. */
+export const CONDUCTOR_IDLE = '#6b7280';
+
 /** Both conductors as one segment soup, so the pair costs a single Line. */
 function buildConductors(): [number, number, number][] {
   const out: [number, number, number][] = [];
@@ -289,15 +294,53 @@ export interface TransformerProps {
   position: readonly [number, number, number];
   gridKw: number;
   overThreshold: boolean;
+  /**
+   * What the span off the pylon should be showing. Like the conduits, this is a
+   * target the material walks to over SETTLE_MS rather than a value that is
+   * re-applied on render -- so an approved plan settles the whole grid channel,
+   * conductors included, instead of cutting it.
+   */
+  conductorColor?: string;
 }
 
-export function Transformer({ type, position, gridKw, overThreshold }: TransformerProps) {
+export function Transformer({
+  type,
+  position,
+  gridKw,
+  overThreshold,
+  conductorColor = CONDUCTOR_IDLE,
+}: TransformerProps) {
   const residence = isResidence(type);
   const label = useMemo<[number, number, number]>(
     // On the pole, above the house's eave line and clear of the battery pill.
     () => (residence ? [1.2, 5.6, -0.6] : [0, 3.5, 0]),
     [residence],
   );
+
+  /* The residence has no pylon, so these three do nothing on that lot -- but
+     they are hooks, so they are called unconditionally all the same. */
+  const conductors = useRef<ComponentRef<typeof Line>>(null);
+  const conductorTarget = useMemo(() => new Color(conductorColor), [conductorColor]);
+  const reduced = usePrefersReducedMotion();
+
+  const seeded = useRef(false);
+  useLayoutEffect(() => {
+    const material = conductors.current?.material;
+    if (!material || seeded.current) return;
+    seeded.current = true;
+    material.color.copy(conductorTarget);
+  }, [conductorTarget]);
+
+  useFrame((_, delta) => {
+    const material = conductors.current?.material;
+    if (!material) return;
+    if (reduced) {
+      material.color.copy(conductorTarget);
+      return;
+    }
+    const alpha = settle(delta);
+    if (alpha > 0) material.color.lerp(conductorTarget, alpha);
+  });
 
   if (residence) {
     return (
@@ -339,11 +382,11 @@ export function Transformer({ type, position, gridKw, overThreshold }: Transform
         <meshStandardMaterial color="#d6d3d1" roughness={0.35} metalness={0.05} />
       </Cylinders>
 
-      {/* Bare aluminium: dark against the sky, and never bright enough to bloom. */}
+      {/* Never bright enough to bloom; its colour is walked in the frame loop. */}
       <Line
+        ref={conductors}
         points={CONDUCTORS}
         segments
-        color={overThreshold ? C.alert : '#6b7280'}
         lineWidth={1.4}
         transparent
         opacity={0.8}

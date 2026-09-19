@@ -56,6 +56,9 @@ export const POLL_INTERVAL_MS = 1000;
 /** One simulated hour per tick while the scrubber is playing. */
 export const PLAYBACK_INTERVAL_MS = 700;
 
+/** Default travel time for `playTo`, the cold open's one-shot scrub. */
+export const PLAY_TO_DURATION_MS = 2400;
+
 /**
  * Building the app opens on before anything is stored. Duplicated from the
  * mock registry on purpose -- the store must not import fixtures, or the real
@@ -104,6 +107,12 @@ export interface GridShiftValue {
   play: () => void;
   pause: () => void;
   togglePlay: () => void;
+  /**
+   * One-shot scrub from 00:00 to `hour`, eased over `durationMs` on rAF rather
+   * than on the 700ms tick. Used by the cold open; `pause()` cancels it, so any
+   * transport press or store reset stops it the same way it stops playback.
+   */
+  playTo: (hour: number, durationMs?: number) => void;
 
   /* ---- flows ---- */
   viewMode: ViewMode;
@@ -179,6 +188,8 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const playRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Frame handle for `playTo`; the only other thing `pause()` has to cancel. */
+  const scrubRef = useRef<number | null>(null);
   const mountedRef = useRef(true);
   /** Mirrors viewHour so the playback tick can read it without re-subscribing. */
   const viewHourRef = useRef(FALLBACK_NOW_HOUR);
@@ -197,6 +208,10 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       clearInterval(playRef.current);
       playRef.current = null;
     }
+    if (scrubRef.current !== null) {
+      cancelAnimationFrame(scrubRef.current);
+      scrubRef.current = null;
+    }
     setIsPlaying(false);
   }, []);
 
@@ -209,6 +224,10 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       if (playRef.current !== null) {
         clearInterval(playRef.current);
         playRef.current = null;
+      }
+      if (scrubRef.current !== null) {
+        cancelAnimationFrame(scrubRef.current);
+        scrubRef.current = null;
       }
     };
   }, [stopPolling]);
@@ -279,7 +298,7 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
   const setViewHour = commitViewHour;
 
   const play = useCallback(() => {
-    if (playRef.current !== null) return;
+    if (playRef.current !== null || scrubRef.current !== null) return;
     // Starting from the end rewinds, so the button always does something.
     if (viewHourRef.current >= LAST_HOUR) commitViewHour(0);
     setIsPlaying(true);
@@ -291,8 +310,46 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
     }, PLAYBACK_INTERVAL_MS);
   }, [commitViewHour, pause]);
 
+  /**
+   * Walks the hour 0 -> `hour` once, on rAF, writing only when the integer
+   * hour actually changes -- ~16 store writes for a whole day, not one a frame.
+   * Refuses to start if anything is already driving the cursor.
+   */
+  const playTo = useCallback(
+    (hour: number, durationMs: number = PLAY_TO_DURATION_MS) => {
+      if (playRef.current !== null || scrubRef.current !== null) return;
+
+      const target = clampHour(hour);
+      if (target <= 0 || durationMs <= 0) {
+        commitViewHour(target);
+        return;
+      }
+
+      commitViewHour(0);
+      setIsPlaying(true);
+
+      const started = performance.now();
+      const step = (now: number) => {
+        if (!mountedRef.current) return;
+        const progress = Math.min(1, (now - started) / durationMs);
+        const next = Math.round(progress * target);
+        if (next !== viewHourRef.current) commitViewHour(next);
+        if (progress < 1) {
+          scrubRef.current = requestAnimationFrame(step);
+          return;
+        }
+        // Lands on the target and hands the transport back to the viewer.
+        scrubRef.current = null;
+        setIsPlaying(false);
+      };
+
+      scrubRef.current = requestAnimationFrame(step);
+    },
+    [commitViewHour],
+  );
+
   const togglePlay = useCallback(() => {
-    if (playRef.current !== null) pause();
+    if (playRef.current !== null || scrubRef.current !== null) pause();
     else play();
   }, [pause, play]);
 
@@ -498,6 +555,7 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       play,
       pause,
       togglePlay,
+      playTo,
       viewMode,
       setViewMode,
       flowsAt,
@@ -528,6 +586,7 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       play,
       pause,
       togglePlay,
+      playTo,
       viewMode,
       setViewMode,
       flowsAt,

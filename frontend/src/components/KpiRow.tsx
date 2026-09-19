@@ -19,6 +19,12 @@
  * when the change came from the scrubber. Direct manipulation is 1:1 or it
  * feels broken.
  *
+ * The approve moment lands on the second cell: once the plan is approved the
+ * predicted peak stops being a forecast and becomes a commitment, so the value
+ * counts DOWN from the baseline peak to the optimized one and the tone goes from
+ * alert to good. Nothing about the cell's shape changes -- the footer swaps its
+ * sentence, it does not appear -- so the strip cannot shift under it.
+ *
  * Renders skeleton cells until `summary` arrives so the row never collapses.
  */
 
@@ -172,15 +178,29 @@ function PreviewDot() {
 /* -------------------------------------------------------------------------- */
 
 export function KpiRow() {
-  const { summary, forecast, building, plan, viewMode, viewHour, nowHour, flowsAt } =
-    useGridShift();
+  const {
+    summary,
+    forecast,
+    building,
+    plan,
+    runStatus,
+    viewMode,
+    viewHour,
+    nowHour,
+    flowsAt,
+  } = useGridShift();
+
+  const isApproved = runStatus === 'approved';
 
   const flows = summary ? flowsAt(viewHour) : null;
   const threshold = building?.peak_threshold_kw ?? summary?.peak_threshold_kw ?? 0;
 
   /* Raw values first, so the count-ups are unconditional hooks. */
   const rawLoadKw = flows?.grid_kw ?? summary?.current_load_kw ?? 0;
-  const rawPeakKw = summary?.predicted_peak_kw ?? 0;
+  const baselinePeakKw = summary?.predicted_peak_kw ?? 0;
+  /* An approved plan is what the site will actually do, so the headline peak
+     becomes the optimized one -- and `useCountUp` walks the 522 -> 448 itself. */
+  const rawPeakKw = isApproved && plan ? plan.optimized_peak_kw : baselinePeakKw;
   const rawSocPct = flows?.battery_soc_pct ?? summary?.battery_soc_pct ?? 0;
   const rawSolarKw = flows?.solar_kw ?? summary?.solar_generation_kw ?? 0;
 
@@ -209,9 +229,10 @@ export function KpiRow() {
   const loadPct = threshold > 0 ? (loadKw / threshold) * 100 : 0;
 
   /* 2 -- predicted peak: a day-level number, so it ignores the scrubber */
-  const overBy = summary.predicted_peak_kw - threshold;
+  const overBy = rawPeakKw - threshold;
   const isOverThreshold = overBy > 0;
   const showOptimizedPeak = viewMode === 'optimized' && plan !== null;
+  const savedKw = plan ? baselinePeakKw - plan.optimized_peak_kw : 0;
 
   /* 3 -- battery at the viewed hour */
   const batteryKw = flows?.battery_kw ?? 0;
@@ -262,12 +283,18 @@ export function KpiRow() {
         label="Predicted peak"
         value={Math.round(peakKw).toString()}
         unit="kW"
-        valueClassName={isOverThreshold ? 'text-alert' : 'text-ink'}
+        valueClassName={
+          isOverThreshold ? 'text-alert' : isApproved ? 'text-good' : 'text-ink'
+        }
         context={`${formatHour(summary.predicted_peak_time)} · ${
           isOverThreshold ? `+${formatKw(overBy)} over threshold` : 'under threshold'
         }`}
         footer={
-          showOptimizedPeak ? (
+          isApproved && plan ? (
+            <span className="text-good tabular-nums">
+              {`↓ ${formatKw(savedKw)} vs ${formatKw(baselinePeakKw)} baseline`}
+            </span>
+          ) : showOptimizedPeak ? (
             <span className="text-good tabular-nums">
               {`→ ${Math.round(optimizedPeakKw)} kW optimized`}
             </span>

@@ -12,6 +12,10 @@
  * border around text that already says 522. On black, one red dot and one red
  * number is louder than both, and the row sits on the same rhythm as everything
  * else on the page. Run GridShift is the only accent object in this region.
+ *
+ * The one piece of motion in here is the approve moment: when the plan is
+ * approved the dot and the peak figure crossfade alert -> good over --dur, on
+ * the shared ease, rather than cutting. Colour only, so the row cannot shift.
  */
 
 import clsx from 'clsx';
@@ -60,6 +64,7 @@ export function PeakAlert() {
           aria-hidden="true"
           className={clsx(
             'mt-1.5 h-[7px] w-[7px] shrink-0 rounded-full',
+            'transition-[background-color,box-shadow] duration-[var(--dur)] ease-[var(--ease)]',
             isApproved
               ? 'bg-good shadow-[0_0_0_4px_rgba(90,229,150,0.14)]'
               : 'bg-alert shadow-[0_0_0_4px_rgba(255,90,82,0.14)]',
@@ -71,6 +76,7 @@ export function PeakAlert() {
             <span
               className={clsx(
                 'tabular-nums',
+                'transition-colors duration-[var(--dur)] ease-[var(--ease)]',
                 isApproved ? 'text-good' : 'text-alert',
               )}
             >

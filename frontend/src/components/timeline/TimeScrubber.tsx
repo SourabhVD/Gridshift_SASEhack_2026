@@ -2,7 +2,14 @@
 
 /**
  * TimeScrubber -- the 24-hour transport control that sits under the demand
- * chart: play/pause, step, scrub, and the baseline/optimized toggle.
+ * chart: play/pause, step, scrub, and the baseline/optimized switch.
+ *
+ * The switch is the ONE place that comparison lives. It used to be a quiet pair
+ * of buttons here with a second copy two clicks deep in the scene's settings
+ * menu; the duplicate is gone and this one is promoted -- captioned, ink rather
+ * than muted, and with a thumb that slides under the label over --dur instead of
+ * blinking to it. After Run GridShift it is the most important control on the
+ * page, and it now looks like one.
  *
  * Fully controlled. There is no timer in here on purpose -- playback ticking
  * lives in the store, so this component stays a pure function of its props and
@@ -20,6 +27,7 @@ import { ChevronLeft, ChevronRight, Pause, Play } from 'lucide-react';
 import React, {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -75,19 +83,39 @@ const SPARK_W = 240;
 const SPARK_H = 24;
 const CELL_W = SPARK_W / HOURS;
 
+/** Both segments, identical width -- the sliding thumb is 50 % of the control. */
+const MODE_SEGMENT = [
+  'relative z-10 w-[5.25rem] rounded-[5px] px-2.5 py-1',
+  'text-[11px] font-medium transition-colors duration-[var(--dur)] ease-[var(--ease)]',
+  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+].join(' ');
+
 const HOUR_LIST: readonly number[] = Array.from({ length: HOURS }, (_, i) => i);
 /** Every third hour, matching DemandChart's axis ticks. */
 const TICK_HOURS: readonly number[] = HOUR_LIST.filter((h) => h % 3 === 0);
 
 /**
- * One-shot attention ring for the Optimized segment. The keyframes live here
+ * One-shot attention ring for the whole Baseline/Optimized control, played once
+ * when a plan first arrives and unlocks the comparison. The keyframes live here
  * because globals.css is owned elsewhere; the gsscrub- prefix keeps them from
  * colliding with anything the theme adds later.
+ *
+ * The control's own hairline is carried inside the keyframe rather than left to
+ * a utility class: box-shadow is one property, so animating the ring on its own
+ * would blow the hairline away for the length of the animation.
  */
 const SCRUBBER_CSS = `
 @keyframes gsscrub-attention {
-  0%, 60% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ink) 45%, transparent); }
-  100% { box-shadow: 0 0 0 2px transparent; }
+  0%, 60% {
+    box-shadow:
+      inset 0 0 0 1px var(--color-line-2),
+      0 0 0 2px color-mix(in srgb, var(--color-ink) 45%, transparent);
+  }
+  100% {
+    box-shadow:
+      inset 0 0 0 1px var(--color-line-2),
+      0 0 0 2px transparent;
+  }
 }
 .gsscrub-attention { animation: gsscrub-attention 1.5s ease-out 1 both; }
 @media (prefers-reduced-motion: reduce) {
@@ -253,6 +281,9 @@ function TimeScrubberImpl({
   const [hoverHour, setHoverHour] = useState<number | null>(null);
   const [attention, setAttention] = useState(false);
 
+  /** Ties the "View" caption to the segmented group without a duplicate label. */
+  const viewLabelId = useId();
+
   const reducedMotion = usePrefersReducedMotion();
 
   const safeHour = clampHour(hour);
@@ -412,6 +443,10 @@ function TimeScrubberImpl({
 
   const hoverValue = hoverHour === null ? undefined : loadByHour[hoverHour];
   const playheadTransition = !isDragging && !reducedMotion;
+
+  /* Optimized is only a real state once a plan exists; before that the thumb
+     stays under Baseline however the prop is spelled. */
+  const isOptimized = mode === 'optimized' && canToggleMode;
 
   return (
     <div
@@ -596,45 +631,63 @@ function TimeScrubberImpl({
       </div>
 
       {/* ---- mode -------------------------------------------------------- */}
-      <div className="flex shrink-0 flex-col gap-1 sm:items-end">
-        <div
-          role="group"
-          aria-label="Load series"
-          className="inline-flex rounded-md shadow-[inset_0_0_0_1px_var(--color-line-2)]"
-        >
-          <button
-            type="button"
-            onClick={selectBaseline}
-            aria-pressed={mode === 'baseline'}
-            className={clsx(
-              'rounded-l-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors',
-              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-              mode === 'baseline'
-                ? 'bg-surface-2 text-ink'
-                : 'text-muted hover:text-ink',
-            )}
+      <div className="flex shrink-0 flex-col gap-1.5 sm:items-end">
+        <div className="flex items-center gap-2">
+          <span
+            id={viewLabelId}
+            className="text-[10px] font-medium tracking-[0.09em] text-muted uppercase"
           >
-            Baseline
-          </button>
-          <button
-            type="button"
-            onClick={selectOptimized}
-            disabled={!canToggleMode}
-            aria-pressed={mode === 'optimized'}
-            title={canToggleMode ? undefined : 'Run GridShift to generate a plan'}
+            View
+          </span>
+
+          <div
+            role="group"
+            aria-labelledby={viewLabelId}
             className={clsx(
-              'rounded-r-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors',
-              'shadow-[inset_1px_0_0_0_var(--color-line-2)]',
-              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-              'disabled:cursor-not-allowed disabled:text-muted/40',
-              mode === 'optimized' && canToggleMode
-                ? 'bg-surface-2 text-ink'
-                : 'text-muted hover:text-ink',
+              'relative inline-flex rounded-md p-0.5',
+              'shadow-[inset_0_0_0_1px_var(--color-line-2)]',
               attention && 'gsscrub-attention',
             )}
           >
-            Optimized
-          </button>
+            {/* The thumb: exactly half the control's inner width, so a 100 %
+                translate lands it on the second segment. Transform only, so it
+                slides on the compositor and nothing reflows. Reduced motion is
+                handled by the global `transition: none` rule -- it jumps. */}
+            <span
+              aria-hidden="true"
+              className={clsx(
+                'absolute inset-y-0.5 left-0.5 w-[calc(50%-2px)] rounded-[5px] bg-surface-2',
+                'transition-transform duration-[var(--dur)] ease-[var(--ease)]',
+              )}
+              style={{ transform: isOptimized ? 'translateX(100%)' : 'translateX(0)' }}
+            />
+
+            <button
+              type="button"
+              onClick={selectBaseline}
+              aria-pressed={!isOptimized}
+              className={clsx(
+                MODE_SEGMENT,
+                !isOptimized ? 'text-ink' : 'text-muted hover:text-ink',
+              )}
+            >
+              Baseline
+            </button>
+            <button
+              type="button"
+              onClick={selectOptimized}
+              disabled={!canToggleMode}
+              aria-pressed={isOptimized}
+              title={canToggleMode ? undefined : 'Run GridShift to generate a plan'}
+              className={clsx(
+                MODE_SEGMENT,
+                'disabled:cursor-not-allowed disabled:text-muted/40',
+                isOptimized ? 'text-ink' : 'text-muted hover:text-ink',
+              )}
+            >
+              Optimized
+            </button>
+          </div>
         </div>
 
         <div

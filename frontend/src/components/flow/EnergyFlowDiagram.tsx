@@ -116,7 +116,10 @@ const FLOW_CSS = `
     opacity 250ms ease,
     fill-opacity 250ms ease,
     width 250ms ease,
-    fill 250ms ease;
+    fill 250ms ease,
+    /* The grid wire's approve moment, at the same 800 ms the 3D conduits lerp
+       over -- the two views must settle together or they contradict each other. */
+    stroke 800ms cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 @media (prefers-reduced-motion: reduce) {
   .gsflow-dash, .gsflow-pulse, .gsflow-fan { animation: none; }
@@ -174,16 +177,21 @@ export function EnergyFlowDiagram({
   const evLoadRatio = clamp(flows.ev_kw / evCapacityKw, 0, 1);
 
   /* Five channels, five colours, and exactly ONE of them ever changes state.
-   * The grid goes red over the billed threshold and green once an optimized
-   * plan is holding it under; every other wire keeps its own colour in both
-   * modes. Three wires changing at once was why the approve moment landed on
-   * nothing in particular -- and why EV had to borrow the grid blue and HVAC
-   * the muted grey, which made both of them unnameable. */
-  const gridColor = overThreshold
-    ? 'var(--color-alert)'
-    : optimized
+   * The grid goes red over the billed threshold, green once an optimized plan
+   * is holding it under, and green unconditionally once that plan has been
+   * approved -- the same rule the 3D conduits follow, transitioned over 800 ms
+   * by `.gsflow-tween`. Every other wire keeps its own colour in both modes.
+   * Three wires changing at once was why the approve moment landed on nothing
+   * in particular -- and why EV had to borrow the grid blue and HVAC the muted
+   * grey, which made both of them unnameable. */
+  const gridColor =
+    runStatus === 'approved'
       ? 'var(--color-good)'
-      : 'var(--color-forecast)';
+      : overThreshold
+        ? 'var(--color-alert)'
+        : optimized
+          ? 'var(--color-good)'
+          : 'var(--color-forecast)';
   const solarColor = 'var(--color-solar)';
   const batteryColor = 'var(--color-battery)';
   const evColor = 'var(--color-ev)';

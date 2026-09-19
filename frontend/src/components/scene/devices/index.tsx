@@ -34,7 +34,9 @@
  * mode, so an approve reads as one line changing rather than three:
  *
  *   grid      stage blue #6EA0FF; alert #FF7B75 over the threshold, good
- *             #7BEAAB once an optimized plan is holding it under
+ *             #7BEAAB once an optimized plan is holding it under -- and good
+ *             unconditionally once that plan has been APPROVED, which is what
+ *             the approve moment settles to
  *   solar     stage amber #FFBE5C
  *   battery   stage violet #D5B8FF
  *   ev        stage teal #4CD9C3
@@ -42,16 +44,33 @@
  *
  * ## Draw calls
  *
- * The budget is 32. A commercial lot spends 29: transformer 5, battery 4,
- * charging court 8, array 2, plant 3, five conduit tubes, one particle mesh and
- * one highlight mesh. The residence spends 26. Every prop groups its geometry by
- * material rather than by object to get there -- see `Instanced.tsx`.
+ * The budget is 32. A commercial lot spends 30: transformer 5, battery 4,
+ * charging court 8, array 2, plant 3, five conduit tubes, one particle mesh, one
+ * approve-pulse bead and one highlight mesh. The residence spends 27. Every prop
+ * groups its geometry by material rather than by object to get there -- see
+ * `Instanced.tsx`.
+ *
+ * ## The approve moment
+ *
+ * `runStatus` is read from the store rather than taken as a prop: react-three-
+ * fiber bridges React context into the canvas, and threading one more boolean
+ * through `EnergySceneProps` for a beat that only this subtree stages would put
+ * the plumbing further from the thing it drives. Approval does two things here,
+ * and both are frame-loop work on materials that already exist -- nothing is
+ * remounted:
+ *
+ *   colour   the grid conduit, its beads and the pylon conductors walk to
+ *            `good` over 800 ms (see Conduit / FlowParticles / Transformer)
+ *   pulse    one bright bead runs the grid conduit transformer -> junction,
+ *            once (see ApprovePulse)
  */
 
 import { useMemo } from 'react';
 import { CatmullRomCurve3 } from 'three';
+import { useGridShift } from '@/lib/store';
 import type { DevicesProps } from '../contracts';
 import { RESIDENCE_WALL_BATTERY, anchorsFor } from '../layout';
+import { ApprovePulse } from './ApprovePulse';
 import { BatteryCabinet } from './BatteryCabinet';
 import { C, evPlan, isResidence, maxFlowKw, v3 } from './common';
 import { Conduit, conduitScale } from './Conduit';
@@ -69,7 +88,7 @@ import {
 } from './paths';
 import { RoofHvac } from './RoofHvac';
 import { RoofSolar } from './RoofSolar';
-import { Transformer } from './Transformer';
+import { CONDUCTOR_IDLE, Transformer } from './Transformer';
 import { Pickable, ringsFor } from '../interaction/Pickable';
 
 /** Conduit gauge. A utility feeder is not the same object as a domestic run. */
@@ -87,6 +106,9 @@ export function Devices({
   activeNodes,
   running,
 }: DevicesProps) {
+  const { runStatus } = useGridShift();
+  const approved = runStatus === 'approved';
+
   const type = building.type;
   const residence = isResidence(type);
   const maxKw = maxFlowKw(flows);
@@ -140,7 +162,16 @@ export function Devices({
    * green once an optimized plan is holding it under. Every other conduit
    * keeps its own channel colour in both modes -- three lines changing at once
    * is why the approve moment used to land on nothing in particular. */
-  const gridColor = overThreshold ? C.alert : optimized ? C.good : C.grid;
+  const gridColor = approved
+    ? C.good
+    : overThreshold
+      ? C.alert
+      : optimized
+        ? C.good
+        : C.grid;
+  /* The span off the pylon joins the grid channel once the plan is committed;
+     until then it is bare aluminium, or red while the site is over threshold. */
+  const conductorColor = approved ? C.good : overThreshold ? C.alert : CONDUCTOR_IDLE;
   const solarColor = C.solar;
   const batteryColor = C.battery;
   const evColor = C.ev;
@@ -214,6 +245,7 @@ export function Devices({
           position={anchors.grid}
           gridKw={flows.grid_kw}
           overThreshold={overThreshold}
+          conductorColor={conductorColor}
         />
       </Pickable>
       <Pickable node="battery" ring={rings.battery}>
@@ -251,6 +283,14 @@ export function Devices({
         />
       ))}
       <FlowParticles streams={streams} />
+
+      {/* Fires once on the rising edge of `approved`, then parks itself. */}
+      <ApprovePulse
+        curve={curves.grid}
+        active={approved}
+        radius={scales.grid.radius}
+        color={C.good}
+      />
 
       <Highlight
         building={building}
