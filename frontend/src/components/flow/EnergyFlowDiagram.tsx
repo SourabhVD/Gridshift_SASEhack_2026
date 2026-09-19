@@ -173,17 +173,25 @@ export function EnergyFlowDiagram({
   const evCapacityKw = Math.max(building.ev_bays * KW_PER_EV_BAY, 1);
   const evLoadRatio = clamp(flows.ev_kw / evCapacityKw, 0, 1);
 
-  const gridColor = overThreshold ? 'var(--color-alert)' : 'var(--color-forecast)';
-  const solarColor = 'var(--color-peak)';
-  // In an optimized plan, a discharging battery and a throttled charger are the
-  // agent's doing: colour them as the win they are.
-  const batteryColor =
-    optimized && flows.battery_kw > 0 ? 'var(--color-good)' : 'var(--color-battery)';
-  const evColor = optimized && evLoadRatio < 0.3 ? 'var(--color-good)' : 'var(--color-forecast)';
-  const hvacLeads = flows.hvac_kw > 0 && flows.hvac_kw >= flows.ev_kw;
-  const hvacColor = hvacLeads ? 'var(--color-peak)' : 'var(--color-muted)';
+  /* Five channels, five colours, and exactly ONE of them ever changes state.
+   * The grid goes red over the billed threshold and green once an optimized
+   * plan is holding it under; every other wire keeps its own colour in both
+   * modes. Three wires changing at once was why the approve moment landed on
+   * nothing in particular -- and why EV had to borrow the grid blue and HVAC
+   * the muted grey, which made both of them unnameable. */
+  const gridColor = overThreshold
+    ? 'var(--color-alert)'
+    : optimized
+      ? 'var(--color-good)'
+      : 'var(--color-forecast)';
+  const solarColor = 'var(--color-solar)';
+  const batteryColor = 'var(--color-battery)';
+  const evColor = 'var(--color-ev)';
+  const hvacColor = 'var(--color-hvac)';
 
-  const outline = overThreshold ? 'var(--color-alert)' : 'var(--color-line)';
+  /* The silhouette has to survive on pure black, where a 7 % hairline is
+   * nothing, so it is drawn in muted grey rather than in the divider tone. */
+  const outline = overThreshold ? 'var(--color-alert)' : 'var(--color-muted)';
 
   /* Building ---------------------------------------------------------------- */
 
@@ -338,7 +346,7 @@ export function EnergyFlowDiagram({
           height={19}
           rx={9.5}
           fill="var(--color-surface-2)"
-          stroke="var(--color-line)"
+          stroke="var(--line-2, rgba(255,255,255,0.12))"
         />
         <text
           x={NODE_CENTERS.building.x}
@@ -424,7 +432,7 @@ export function EnergyFlowDiagram({
           height={24}
           rx={12}
           fill="var(--color-surface-2)"
-          stroke="var(--color-line)"
+          stroke="var(--line-2, rgba(255,255,255,0.12))"
         />
         <text
           x={16 + hourPillW / 2}

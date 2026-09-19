@@ -75,7 +75,11 @@ const SUN_HORIZON = new THREE.Color('#ffa957');
    has no background -- but the hemisphere light is tinted with it, which is how
    a shaded wall knows whether it is noon or dusk. */
 
-/** Deep blue-grey, never black: the night sky still has a city under it. */
+/**
+ * Deep blue-grey, never black: this tints the hemisphere *light*, not the
+ * background, and the night sky still has a city under it. The background and
+ * the fog are true black -- see `Stage.PAGE_BASE`.
+ */
 const NIGHT_HORIZON = new THREE.Color('#151d2b');
 /** Pale blue haze at noon. */
 const DAY_HORIZON = new THREE.Color('#c2d4e2');
@@ -86,10 +90,11 @@ const GOLD_HORIZON = new THREE.Color('#d9a173');
 const NIGHT_HEMI = new THREE.Color('#2d3d59');
 /**
  * What the hemisphere light puts into downward-facing surfaces. There is no
- * lawn to bounce any more -- the surface under the site is the dashboard card
- * -- so this is a neutral dark slate rather than grass green.
+ * lawn to bounce any more -- the surface under the site is the page itself,
+ * which is now pure black -- so this is a neutral near-black rather than the
+ * blue slate it was when the page had a navy in it.
  */
-const GROUND_BOUNCE = new THREE.Color('#1b2430');
+const GROUND_BOUNCE = new THREE.Color('#141417');
 
 /** CC0, Poly Haven. 1K equirectangular, ~1.1 MB, served from /public. */
 const HDRI = '/hdri/overcast_soil_puresky_1k.hdr';

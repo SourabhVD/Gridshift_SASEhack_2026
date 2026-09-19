@@ -8,21 +8,23 @@
  * agrees with the flow diagram and the chart marker. Only the predicted peak is
  * a day-level number and stays put.
  *
- * Renders skeleton tiles until `summary` arrives so the row never collapses.
+ * Presentation is one flat strip, not five cards: ten borders and five fills
+ * left, two hairlines and four verticals arrived. With nothing boxing them in,
+ * the values have to carry the separation themselves -- hence 38px at -0.025em
+ * against an 11px tracked label. The hairlines are drawn as 1px grid gaps over
+ * `bg-line`, which keeps them correct at every breakpoint without per-cell
+ * border juggling.
+ *
+ * Count-up: values ease over 400ms when the data behind them changes, and snap
+ * when the change came from the scrubber. Direct manipulation is 1:1 or it
+ * feels broken.
+ *
+ * Renders skeleton cells until `summary` arrives so the row never collapses.
  */
 
 import clsx from 'clsx';
-import {
-  BatteryMedium,
-  DollarSign,
-  Sun,
-  TrendingUp,
-  Zap,
-  type LucideIcon,
-} from 'lucide-react';
 import type { ReactNode } from 'react';
 
-import { Card } from '@/components/ui/Card';
 import {
   formatHour,
   formatHourIndex,
@@ -32,90 +34,83 @@ import {
   formatTempF,
 } from '@/lib/format';
 import { useGridShift } from '@/lib/store';
+import { useCountUp } from '@/lib/useCountUp';
 
-const GRID = 'grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5';
+/** 1px gaps over bg-line draw every hairline; each cell repaints bg-base. */
+const STRIP = [
+  'grid grid-cols-2 gap-px bg-line md:grid-cols-3 xl:grid-cols-5',
+  'border-y border-line-2',
+].join(' ');
+
+const CELL = 'flex min-w-0 flex-col bg-base px-5 py-[18px]';
 
 /** Number of cells in the battery glyph. */
 const BATTERY_SEGMENTS = 5;
 
-/**
- * Splits a formatted stat ("396 kW", "82%", "$0.09/kWh") into the big value and
- * its small trailing unit, so the formatters in @/lib/format stay the single
- * source of truth for rounding.
- */
-const STAT_RE = /^(\$?-?[\d.,]+)\s*(.*)$/;
-
-function splitStat(formatted: string): { value: string; unit: string } {
-  const match = STAT_RE.exec(formatted);
-  if (!match) return { value: formatted, unit: '' };
-  return { value: match[1], unit: match[2] };
-}
-
 /* -------------------------------------------------------------------------- */
-/* Tile                                                                        */
+/* Cell                                                                        */
 /* -------------------------------------------------------------------------- */
 
-interface TileProps {
-  icon: LucideIcon;
+interface CellProps {
   label: string;
-  /** Formatted stat, e.g. "522 kW" -- split into value + unit for you. */
-  stat: string;
+  /** The big number, already formatted and already counted up. */
+  value: string;
+  /** Trailing unit: "kW", "%". Rendered small and muted beside the value. */
+  unit?: string;
   /** Tone class for the value, e.g. "text-alert". Defaults to text-ink. */
   valueClassName?: string;
-  /** Meter, bar or glyph rendered between the value and the context line. */
+  /** 2px meter or glyph rendered between the value and the context line. */
   meter?: ReactNode;
   context: ReactNode;
   /** Optional second context line, e.g. the optimized peak. */
   footer?: ReactNode;
 }
 
-function Tile({
-  icon: Icon,
+function Cell({
   label,
-  stat,
+  value,
+  unit,
   valueClassName,
   meter,
   context,
   footer,
-}: TileProps) {
-  const { value, unit } = splitStat(stat);
-
+}: CellProps) {
   return (
-    <Card bodyClassName="px-4 py-3.5">
-      <div className="flex items-center gap-2">
-        <Icon className="h-3.5 w-3.5 shrink-0 text-muted" aria-hidden="true" />
-        <span className="truncate text-[11px] font-medium tracking-wide text-muted uppercase">
-          {label}
-        </span>
-      </div>
+    <div className={CELL}>
+      <span className="truncate text-[11px] font-medium tracking-[0.09em] text-muted uppercase">
+        {label}
+      </span>
 
-      <div className="mt-2.5 flex items-baseline gap-1.5">
+      <div className="mt-3.5 flex items-baseline gap-1.5">
         <span
           className={clsx(
-            'text-[26px] leading-none font-semibold tabular-nums transition-colors',
+            'text-[38px] leading-none font-semibold -tracking-[0.025em] tabular-nums',
+            'transition-colors duration-[var(--dur)] ease-[var(--ease)]',
             valueClassName ?? 'text-ink',
           )}
         >
           {value}
         </span>
-        {unit && <span className="text-xs font-medium text-muted">{unit}</span>}
+        {unit && (
+          <span className="text-[13px] font-medium text-muted">{unit}</span>
+        )}
       </div>
 
-      {meter && <div className="mt-3">{meter}</div>}
+      {meter && <div className="mt-3.5">{meter}</div>}
 
-      <p className="mt-2 truncate text-xs text-muted">{context}</p>
-      {footer && <p className="mt-0.5 truncate text-xs">{footer}</p>}
-    </Card>
+      <p className="mt-2.5 truncate text-xs text-ink-2">{context}</p>
+      {footer && <p className="mt-1 truncate text-xs">{footer}</p>}
+    </div>
   );
 }
 
-function SkeletonTile() {
+function SkeletonCell() {
   return (
-    <Card bodyClassName="px-4 py-3.5">
+    <div className={CELL} aria-hidden="true">
       <div className="h-3 w-24 animate-pulse rounded bg-surface-2" />
-      <div className="mt-3.5 h-6 w-20 animate-pulse rounded bg-surface-2" />
-      <div className="mt-4 h-2.5 w-full animate-pulse rounded bg-surface-2" />
-    </Card>
+      <div className="mt-4 h-9 w-24 animate-pulse rounded bg-surface-2" />
+      <div className="mt-5 h-2.5 w-full animate-pulse rounded bg-surface-2" />
+    </div>
   );
 }
 
@@ -134,9 +129,12 @@ function LoadBar({ pct }: { pct: number }) {
   const width = Math.max(0, Math.min(100, pct));
 
   return (
-    <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
+    <div className="h-0.5 w-full overflow-hidden rounded-full bg-surface-2">
       <div
-        className={clsx('h-full rounded-full transition-[width]', LOAD_BAR_CLASSES[tone])}
+        className={clsx(
+          'h-full rounded-full transition-[width] duration-[var(--dur)] ease-[var(--ease)]',
+          LOAD_BAR_CLASSES[tone],
+        )}
         style={{ width: `${width}%` }}
       />
     </div>
@@ -145,7 +143,7 @@ function LoadBar({ pct }: { pct: number }) {
 
 function BatteryGlyph({ filled }: { filled: number }) {
   return (
-    <div className="flex h-1.5 w-full gap-1">
+    <div className="flex h-0.5 w-full gap-1">
       {Array.from({ length: BATTERY_SEGMENTS }, (_, i) => (
         <div
           key={i}
@@ -159,10 +157,10 @@ function BatteryGlyph({ filled }: { filled: number }) {
   );
 }
 
-/** The "this is not now" marker on the tiles that follow the scrubber. */
+/** The "this is not now" marker on the cells that follow the scrubber. */
 function PreviewDot() {
   return (
-    <span className="mr-1.5 inline-flex items-center gap-1 text-forecast">
+    <span className="mr-1.5 inline-flex items-center gap-1 text-muted">
       <span className="inline-block h-1.5 w-1.5 rounded-full bg-forecast align-middle" />
       preview
     </span>
@@ -177,22 +175,37 @@ export function KpiRow() {
   const { summary, forecast, building, plan, viewMode, viewHour, nowHour, flowsAt } =
     useGridShift();
 
+  const flows = summary ? flowsAt(viewHour) : null;
+  const threshold = building?.peak_threshold_kw ?? summary?.peak_threshold_kw ?? 0;
+
+  /* Raw values first, so the count-ups are unconditional hooks. */
+  const rawLoadKw = flows?.grid_kw ?? summary?.current_load_kw ?? 0;
+  const rawPeakKw = summary?.predicted_peak_kw ?? 0;
+  const rawSocPct = flows?.battery_soc_pct ?? summary?.battery_soc_pct ?? 0;
+  const rawSolarKw = flows?.solar_kw ?? summary?.solar_generation_kw ?? 0;
+
+  /* Scrubber-driven numbers snap on scrub and ease on everything else. */
+  const loadKw = useCountUp(rawLoadKw, { snapKey: viewHour });
+  const socPct = useCountUp(rawSocPct, { snapKey: viewHour });
+  const solarKw = useCountUp(rawSolarKw, { snapKey: viewHour });
+  /* The day-level peak is the demo's punchline; it always counts. */
+  const peakKw = useCountUp(rawPeakKw);
+  const optimizedPeakKw = useCountUp(plan?.optimized_peak_kw ?? 0);
+
   if (!summary) {
     return (
-      <div className={GRID}>
+      <div className={STRIP}>
         {Array.from({ length: 5 }, (_, i) => (
-          <SkeletonTile key={i} />
+          <SkeletonCell key={i} />
         ))}
+        <div className="bg-base xl:hidden" aria-hidden="true" />
       </div>
     );
   }
 
-  const flows = flowsAt(viewHour);
   const isScrubbed = viewHour !== nowHour;
-  const threshold = building?.peak_threshold_kw ?? summary.peak_threshold_kw;
 
   /* 1 -- load at the viewed hour, against the billed threshold */
-  const loadKw = flows?.grid_kw ?? summary.current_load_kw;
   const loadPct = threshold > 0 ? (loadKw / threshold) * 100 : 0;
 
   /* 2 -- predicted peak: a day-level number, so it ignores the scrubber */
@@ -201,7 +214,6 @@ export function KpiRow() {
   const showOptimizedPeak = viewMode === 'optimized' && plan !== null;
 
   /* 3 -- battery at the viewed hour */
-  const socPct = flows?.battery_soc_pct ?? summary.battery_soc_pct;
   const batteryKw = flows?.battery_kw ?? 0;
   const availableKwh = (socPct / 100) * summary.battery_capacity_kwh;
   const filledSegments = Math.max(
@@ -215,7 +227,8 @@ export function KpiRow() {
         ? `charging ${formatKw(Math.abs(batteryKw))}`
         : 'idle';
 
-  /* 4 -- tariff. Prefer the forecast's own price curve over a hard-coded hour. */
+  /* 4 -- tariff. Prefer the forecast's own price curve over a hard-coded hour.
+     Not counted up: at two decimals a count-up is noise, not information. */
   const priceNow =
     forecast?.points[viewHour]?.price_per_kwh ?? summary.electricity_price_per_kwh;
   const nextPeakPrice = forecast?.points.find(
@@ -229,16 +242,13 @@ export function KpiRow() {
       ? 'On-peak pricing now'
       : 'Peak pricing from 14:00';
 
-  /* 5 -- solar at the viewed hour */
-  const solarKw = flows?.solar_kw ?? summary.solar_generation_kw;
-
   return (
-    <div className={GRID}>
-      <Tile
-        icon={Zap}
+    <div className={STRIP}>
+      <Cell
         label={isScrubbed ? `Load at ${formatHourIndex(viewHour)}` : 'Current load'}
-        stat={formatKw(loadKw)}
-        valueClassName={loadKw > threshold ? 'text-alert' : 'text-ink'}
+        value={Math.round(loadKw).toString()}
+        unit="kW"
+        valueClassName={rawLoadKw > threshold ? 'text-alert' : 'text-ink'}
         meter={<LoadBar pct={loadPct} />}
         context={
           <>
@@ -248,27 +258,27 @@ export function KpiRow() {
         }
       />
 
-      <Tile
-        icon={TrendingUp}
+      <Cell
         label="Predicted peak"
-        stat={formatKw(summary.predicted_peak_kw)}
+        value={Math.round(peakKw).toString()}
+        unit="kW"
         valueClassName={isOverThreshold ? 'text-alert' : 'text-ink'}
         context={`${formatHour(summary.predicted_peak_time)} · ${
           isOverThreshold ? `+${formatKw(overBy)} over threshold` : 'under threshold'
         }`}
         footer={
           showOptimizedPeak ? (
-            <span className="text-good">
-              {`→ ${formatKw(plan.optimized_peak_kw)} optimized`}
+            <span className="text-good tabular-nums">
+              {`→ ${Math.round(optimizedPeakKw)} kW optimized`}
             </span>
           ) : undefined
         }
       />
 
-      <Tile
-        icon={BatteryMedium}
+      <Cell
         label="Battery"
-        stat={formatPct(socPct)}
+        value={formatPct(socPct).replace('%', '')}
+        unit="%"
         valueClassName="text-battery"
         meter={<BatteryGlyph filled={filledSegments} />}
         context={`${batteryState} · ${Math.round(availableKwh)} of ${
@@ -276,10 +286,10 @@ export function KpiRow() {
         } kWh · ${formatKw(summary.battery_max_kw)} max`}
       />
 
-      <Tile
-        icon={DollarSign}
+      <Cell
         label="Electricity price"
-        stat={formatPrice(priceNow)}
+        value={formatPrice(priceNow).replace('/kWh', '')}
+        unit="/kWh"
         context={
           <>
             {isScrubbed && <PreviewDot />}
@@ -288,14 +298,18 @@ export function KpiRow() {
         }
       />
 
-      <Tile
-        icon={Sun}
+      <Cell
         label="Solar"
-        stat={formatKw(solarKw, 1)}
+        value={solarKw.toFixed(1)}
+        unit="kW"
         context={`${formatTempF(summary.outdoor_temp_f)} outdoor · ${formatTempF(
           summary.hvac_setpoint_f,
         )} setpoint`}
       />
+
+      {/* Five cells into two or three columns leaves a hole, and the hole
+          shows the hairline colour the gaps are painted with. Fill it. */}
+      <div className="bg-base xl:hidden" aria-hidden="true" />
     </div>
   );
 }

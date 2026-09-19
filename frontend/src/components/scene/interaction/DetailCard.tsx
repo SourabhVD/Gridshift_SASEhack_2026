@@ -33,6 +33,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { Badge, type BadgeTone } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { formatHour, formatHourIndex, formatPrice } from '@/lib/format';
 import { useGridShift } from '@/lib/store';
 import type { Action, ActionType, Building, EnergyFlows } from '@/types/api';
@@ -53,6 +54,22 @@ const FLOW_KEY: Record<SceneNode, FlowKey> = {
   battery: 'battery_kw',
   ev: 'ev_kw',
   hvac: 'hvac_kw',
+};
+
+/**
+ * Each node's channel colour, as a CSS variable. The card is the one place the
+ * scene's colours and the dashboard's meet, so it reads the UI hexes (the
+ * lighter stage ramp belongs to emissive materials, not to DOM).
+ *
+ * `building` is the grid channel: what the building costs IS its grid draw.
+ */
+const CHANNEL: Record<SceneNode, string> = {
+  building: 'var(--color-forecast)',
+  grid: 'var(--color-forecast)',
+  solar: 'var(--color-solar)',
+  battery: 'var(--color-battery)',
+  ev: 'var(--color-ev)',
+  hvac: 'var(--color-hvac)',
 };
 
 const ICON: Record<SceneNode, LucideIcon> = {
@@ -221,7 +238,7 @@ function DetailPanel({ node }: { node: SceneNode }) {
       className={clsx(
         /* Above the in-world kW pills, which drei parks at z-index 24. */
         'pointer-events-auto absolute z-30 flex flex-col overflow-hidden',
-        'rounded-xl border border-white/10 bg-[#0a0f1a]/70 shadow-2xl backdrop-blur-md',
+        'rounded-xl border border-white/10 bg-black/70 shadow-2xl backdrop-blur-md',
         /* Inset from the scene's edges, and clear of the two things that share
            its right-hand column: the "NET GRID DRAW" block above (which ends
            around 76 px down) and the scene's overflow button below. */
@@ -238,7 +255,7 @@ function DetailPanel({ node }: { node: SceneNode }) {
           type="button"
           onClick={close}
           aria-label="Back to the site view"
-          className="-ml-1 rounded-md p-1 text-muted transition-colors hover:bg-white/5 hover:text-ink focus-visible:ring-1 focus-visible:ring-forecast/60 focus-visible:outline-none"
+          className="-ml-1 rounded-md p-1 text-muted transition-colors hover:bg-white/5 hover:text-ink focus-visible:ring-1 focus-visible:ring-accent/60 focus-visible:outline-none"
         >
           <ChevronLeft className="h-4 w-4" aria-hidden="true" />
         </button>
@@ -291,14 +308,23 @@ function DetailPanel({ node }: { node: SceneNode }) {
               onPick={setViewHour}
               threshold={showsThreshold ? threshold : null}
               signed={node === 'battery'}
+              color={CHANNEL[node]}
             />
             {series.optimized ? (
               <div className="mt-1 flex items-center gap-3 text-[10px] text-muted">
                 <span className="inline-flex items-center gap-1">
-                  <span className="h-1.5 w-3 rounded-sm bg-muted/40" /> baseline
+                  <span
+                    className="h-1.5 w-3 rounded-sm opacity-45"
+                    style={{ backgroundColor: CHANNEL[node] }}
+                  />{' '}
+                  baseline
                 </span>
                 <span className="inline-flex items-center gap-1">
-                  <span className="h-[1.5px] w-3 rounded-sm bg-good" /> optimized
+                  <span
+                    className="h-[1.5px] w-3 rounded-sm"
+                    style={{ backgroundColor: CHANNEL[node] }}
+                  />{' '}
+                  optimized
                 </span>
               </div>
             ) : null}
@@ -391,7 +417,7 @@ function NowBlock({
           {direction === 'idle' ? '0 kW' : kw(Math.abs(value))}
         </div>
         <p className="mt-1.5 text-xs text-muted">
-          <span className={direction === 'discharging' ? 'text-good' : undefined}>
+          <span className={direction === 'discharging' ? 'text-battery' : undefined}>
             {direction}
           </span>
           {' · '}
@@ -529,31 +555,41 @@ function PlanSection({
               </p>
 
               {action.status === 'pending' ? (
+                /* Accent primary / hairline secondary, straight from the
+                   page's own button primitive -- the card is the one place the
+                   scene and the dashboard share a control, so it must not grow
+                   a second set of button styles. Approve is no longer green:
+                   green means "the grid came in under threshold", and a green
+                   button beside a green grid line taught the wrong lesson. */
                 <div className="mt-2 flex items-center gap-2">
-                  <button
-                    type="button"
+                  <Button
+                    variant="primary"
+                    size="sm"
                     aria-label={`Approve: ${action.title}`}
                     disabled={busy !== null}
                     onClick={() => void decide(action.id, 'approve')}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-good px-2.5 py-1 text-[11px] font-medium text-[color:var(--color-base)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
+                    icon={
+                      busy?.id === action.id && busy.decision === 'approve' ? (
+                        <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" />
+                      ) : null
+                    }
                   >
-                    {busy?.id === action.id && busy.decision === 'approve' ? (
-                      <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" />
-                    ) : null}
                     Approve
-                  </button>
-                  <button
-                    type="button"
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
                     aria-label={`Reject: ${action.title}`}
                     disabled={busy !== null}
                     onClick={() => void decide(action.id, 'reject')}
-                    className="inline-flex items-center gap-1.5 rounded-md border border-white/15 px-2.5 py-1 text-[11px] font-medium text-muted transition hover:border-alert/50 hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
+                    icon={
+                      busy?.id === action.id && busy.decision === 'reject' ? (
+                        <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" />
+                      ) : null
+                    }
                   >
-                    {busy?.id === action.id && busy.decision === 'reject' ? (
-                      <LoaderCircle className="h-3 w-3 animate-spin" aria-hidden="true" />
-                    ) : null}
                     Reject
-                  </button>
+                  </Button>
                 </div>
               ) : null}
             </li>

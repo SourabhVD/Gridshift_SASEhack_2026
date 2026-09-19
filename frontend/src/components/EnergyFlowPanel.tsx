@@ -123,8 +123,8 @@ export function EnergyFlowPanel() {
         {effectiveView === '3d' && (
           <span
             className={clsx(
-              'inline-flex items-center rounded-full border border-line bg-surface-2/80 px-3 py-1',
-              'text-[11px] tracking-wide text-muted backdrop-blur-sm',
+              'inline-flex items-center rounded-full px-3 py-1 ring-1 ring-white/12 ring-inset',
+              'bg-black/45 text-[11px] tracking-wide text-ink-2 backdrop-blur-sm',
             )}
           >
             {formatHourIndex(viewHour)} ·{' '}
@@ -197,7 +197,7 @@ function SceneMenu({ view, webglSupported }: { view: FlowView; webglSupported: b
           aria-label="Scene settings"
           className={clsx(
             'absolute right-0 bottom-9 w-44 rounded-xl border border-white/10 p-1.5',
-            'bg-[#0a0f1a]/90 shadow-2xl backdrop-blur-md',
+            'bg-black/90 shadow-2xl backdrop-blur-md',
           )}
         >
           <MenuRow
@@ -222,7 +222,7 @@ function SceneMenu({ view, webglSupported }: { view: FlowView; webglSupported: b
         className={clsx(
           'flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-black/40',
           'text-muted backdrop-blur-sm transition-colors hover:text-ink',
-          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forecast',
+          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
           open && 'text-ink',
         )}
       >
@@ -254,7 +254,7 @@ function MenuRow<T extends string>({
       <div
         role="group"
         aria-label={label}
-        className="flex rounded-full border border-white/10 bg-white/5 p-0.5"
+        className="flex rounded-full border border-white/10 bg-white/[0.04] p-0.5"
       >
         {options.map((option) => {
           const disabled = option === disabledOption;
@@ -270,7 +270,11 @@ function MenuRow<T extends string>({
               className={clsx(
                 'flex-1 rounded-full px-2 py-1 text-[11px] font-medium tracking-wide uppercase',
                 'transition-colors',
-                selected ? 'bg-forecast/15 text-forecast' : 'text-muted hover:text-ink',
+                /* The one accent in this whole region, per the accent rules:
+                   the active segment of a segmented control. */
+                selected
+                  ? 'bg-accent text-[color:var(--color-accent-ink)]'
+                  : 'text-muted hover:text-ink',
                 disabled && 'cursor-not-allowed opacity-40 hover:text-muted',
               )}
             >

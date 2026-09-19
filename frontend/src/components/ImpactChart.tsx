@@ -33,12 +33,20 @@ import { useGridShift } from '@/lib/store';
 const CHART_HEIGHT = 260;
 const MINUS = '−';
 
+/**
+ * Both series are the grid channel: the baseline is the grid blue, the
+ * optimized schedule is `good`, which on this page means exactly "the grid came
+ * in under the threshold". The two peak rules take the same pair of states, so
+ * the legend, the areas and the rules all say the same thing three ways.
+ */
 const COLOR = {
   baseline: 'var(--color-forecast)',
   optimized: 'var(--color-good)',
-  threshold: 'var(--color-peak)',
+  /** The billed ceiling. Alert, like everywhere else -- but held back so it
+   *  does not compete with the old-peak rule, which is the louder red here. */
+  threshold: 'var(--color-alert)',
   oldPeak: 'var(--color-alert)',
-  line: 'var(--color-line)',
+  line: 'var(--line-1, rgba(255,255,255,0.07))',
   muted: 'var(--color-muted)',
 } as const;
 
@@ -274,6 +282,7 @@ export function ImpactChart() {
             <ReferenceLine
               y={forecast.peak_threshold_kw}
               stroke={COLOR.threshold}
+              strokeOpacity={0.45}
               strokeDasharray="5 4"
               strokeWidth={1}
             />

@@ -12,11 +12,13 @@
  * white with a single dark seam and a 20 mm status LED each. There is no bar on
  * a domestic unit; the state of charge lives in the label instead.
  *
- * The LED reads the same on both:
+ * The LED reads the same on both, and it is the battery violet in every state:
+ * green is the grid's optimized colour and teal is the EV channel, so neither
+ * may be borrowed here. Direction is carried by brightness instead --
  *
- *   green   idle          (|battery_kw| < 0.5)
- *   violet  discharging   (battery_kw > 0)
- *   teal    charging      (battery_kw < 0)
+ *   violet, breathing   discharging   (battery_kw > 0)
+ *   violet, steady      charging      (battery_kw < 0)
+ *   violet at 55 %      idle          (|battery_kw| < 0.5)
  *
  * Only the LED and the SOC bar cross the bloom threshold -- they are the one
  * emissive cluster per variant, and a discharging pack breathes by scaling that
@@ -131,7 +133,7 @@ export interface BatteryCabinetProps {
   position: readonly [number, number, number];
   batteryKw: number;
   socPct: number;
-  /** Violet normally; emerald once an optimized plan is leaning on the battery. */
+  /** The battery channel colour. It never borrows another channel's. */
   accent: string;
 }
 
@@ -147,7 +149,10 @@ export function BatteryCabinet({
   const soc = clamp(socPct, 0, 100) / 100;
   const discharging = batteryKw > DORMANT_KW;
   const charging = batteryKw < -DORMANT_KW;
-  const ledHex = discharging ? C.battery : charging ? C.ev : C.good;
+  /* The LED is the battery channel at every state -- green belongs to the grid
+   * and teal to the EVs, so charge direction is carried by brightness (and, for
+   * a discharge, by the breathing below) rather than by hue. */
+  const ledHex = C.battery;
 
   /* One emissive cluster per variant: every pixel in it is meant to bloom. */
   const lights = useMemo<Piece[]>(() => {
@@ -181,7 +186,11 @@ export function BatteryCabinet({
   useFrame((state) => {
     const mat = lightMat.current;
     if (!mat) return;
-    const k = discharging ? 1 + 0.28 * Math.sin(state.clock.elapsedTime * 3.4) : 1;
+    const k = discharging
+      ? 1 + 0.28 * Math.sin(state.clock.elapsedTime * 3.4)
+      : charging
+        ? 1
+        : /* idle: same violet, held back so a working pack still reads louder */ 0.55;
     mat.color.setScalar(k);
   });
 

@@ -13,15 +13,15 @@ import * as THREE from 'three';
 /* -------------------------------------------------------------------------- */
 
 export const PALETTE = {
-  /** Ground pad slab under every building. */
-  pad: '#1c2431',
+  /** Ground pad slab under every building. Neutral: the page under it is #000. */
+  pad: '#141417',
   /** Lighter plinth / entrance canopy. */
-  plinth: '#1f2937',
-  plinthLight: '#334155',
+  plinth: '#1a1a1e',
+  plinthLight: '#2a2a30',
   /** Junction box where the conduits arrive. */
-  junction: '#374151',
-  /** Highlight ring. */
-  highlight: '#38bdf8',
+  junction: '#33333a',
+  /** Highlight ring. --stage-grid, the same blue the pick rings use. */
+  highlight: '#6EA0FF',
 
   /* office */
   officeGlass: '#1e3a5f',
@@ -34,7 +34,7 @@ export const PALETTE = {
   hospitalTrim: '#e2e8f0',
   hospitalCore: '#dbe3ec',
   red: '#dc2626',
-  redBright: '#ef4444',
+  redBright: '#FF7B75',
 
   /* warehouse */
   metalDark: '#4b5563',
@@ -56,10 +56,13 @@ export const PALETTE = {
 const COOL = new THREE.Color('#1e293b');
 /** Warm occupied glow -- loadRatio 1. */
 const WARM = new THREE.Color('#fbbf24');
-/** Over-threshold alarm tint -- loadRatio >= 2. */
-const HOT = new THREE.Color('#ef4444');
-/** A pane that is switched off at night. */
-const OFF = new THREE.Color('#0a0f1a');
+/** Over-threshold alarm tint -- loadRatio >= 2. --stage-alert. */
+const HOT = new THREE.Color('#FF7B75');
+/**
+ * A pane that is switched off at night. True black: on a black page anything
+ * with a hue in it reads as a lit rectangle, which is the opposite of "off".
+ */
+const OFF = new THREE.Color('#000000');
 /** Night-time floor: even a lightly loaded building has lights on after dark. */
 const NIGHT_LIT = new THREE.Color('#ffd08a');
 

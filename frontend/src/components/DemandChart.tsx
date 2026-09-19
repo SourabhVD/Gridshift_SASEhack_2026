@@ -35,14 +35,33 @@ const CHART_HEIGHT = 300;
 /** Last index of the 24-hour day. */
 const LAST_HOUR = 23;
 
+/**
+ * The panel's whole colour vocabulary, in one place.
+ *
+ * Two facts used to share the amber: the billed threshold and the peak-price
+ * window. They are different facts, so the threshold takes `alert` -- crossing
+ * it is the failure the product exists to prevent -- and the band behind it
+ * keeps the amber, which is what "peak pricing" has always meant here.
+ *
+ * `optimized` is `good`, and `good` means exactly one thing on this page: the
+ * grid came in under the threshold. It is the same line as `forecast`, one plan
+ * later, which is why it is the only series allowed to change colour.
+ */
 const COLOR = {
+  /** The grid channel. Forecast and the viewing rule. */
   forecast: 'var(--color-forecast)',
+  /** Metered load. Pure ink: a 2 px line that has to beat the coloured ones. */
   actual: 'var(--color-ink)',
+  /** Grid under threshold, optimized. */
   optimized: 'var(--color-good)',
-  threshold: 'var(--color-peak)',
-  peakBand: 'var(--color-alert)',
-  line: 'var(--color-line)',
+  /** The billed ceiling. */
+  threshold: 'var(--color-alert)',
+  /** Peak-price hours. Fill only, never text. */
+  peakBand: 'var(--color-peak)',
+  /** Divider hairline: alpha, so it holds on the panel and on the page alike. */
+  line: 'var(--line-1, rgba(255,255,255,0.07))',
   muted: 'var(--color-muted)',
+  ink: 'var(--color-ink)',
 } as const;
 
 const MONTHS = [
@@ -322,7 +341,7 @@ export function DemandChart() {
               x1={w.x1}
               x2={w.x2}
               fill={COLOR.peakBand}
-              fillOpacity={0.08}
+              fillOpacity={0.1}
               strokeOpacity={0}
             />
           ))}
@@ -335,7 +354,7 @@ export function DemandChart() {
             strokeWidth={2}
             strokeOpacity={dimBaseline ? 0.6 : 1}
             fill={COLOR.forecast}
-            fillOpacity={dimBaseline ? 0.07 : 0.12}
+            fillOpacity={dimBaseline ? 0.06 : 0.1}
             dot={false}
             activeDot={{ r: 3, strokeWidth: 0, fill: COLOR.forecast }}
             isAnimationActive={false}
@@ -397,14 +416,17 @@ export function DemandChart() {
           {viewLabel !== null && (
             <ReferenceLine
               x={viewLabel}
-              stroke={COLOR.forecast}
+              /* Ink, not the grid blue: the rule says which hour, not which
+                  series, and a blue rule on a blue area reads as data. */
+              stroke={COLOR.ink}
               strokeWidth={1.5}
+              strokeOpacity={0.8}
               label={
                 isScrubbed
                   ? {
                       value: 'Viewing',
                       position: 'top',
-                      fill: COLOR.forecast,
+                      fill: COLOR.ink,
                       fontSize: 11,
                     }
                   : undefined

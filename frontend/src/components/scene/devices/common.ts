@@ -52,21 +52,26 @@ export const RADIUS_BUCKETS = 8;
  * rather than from its albedo.
  */
 export const PALETTE = {
-  /* --- channels ---------------------------------------------------------- */
-  /** --color-forecast. Grid / utility. */
-  grid: '#38bdf8',
-  /** --color-alert. ONLY the grid channel is ever allowed to take this. */
-  alert: '#ef4444',
-  /** --color-peak. Solar, and HVAC once it out-draws the chargers. */
-  solar: '#f59e0b',
-  /** --color-battery. */
-  battery: '#a78bfa',
-  /** EV charging. Deliberately NOT the grid blue -- the two used to collide. */
-  ev: '#2dd4bf',
-  /** --color-muted. HVAC at rest. */
-  hvac: '#9ca3af',
-  /** --color-good. Optimized-mode win: discharging battery, shifted charging. */
-  good: '#10b981',
+  /* --- channels: the STAGE RAMP -------------------------------------------
+   * These are NOT the UI hexes. Bloom clips saturation before it adds light,
+   * so the stage runs each channel ~20 % toward white (same hue, ~8 L* up).
+   * `glow()` multiplies on top of that, which is why BLOOM_GAIN can stay at
+   * 2.2 -- the lift happens in the colour, not in the gain.
+   * ---------------------------------------------------------------------- */
+  /** --stage-grid. Grid / utility. The only channel that takes a state. */
+  grid: '#6EA0FF',
+  /** --stage-alert. ONLY the grid channel is ever allowed to take this. */
+  alert: '#FF7B75',
+  /** --stage-solar. Solar generation. Never borrowed by HVAC any more. */
+  solar: '#FFBE5C',
+  /** --stage-battery. */
+  battery: '#D5B8FF',
+  /** --stage-ev. EV charging. Deliberately NOT the grid blue. */
+  ev: '#4CD9C3',
+  /** --stage-hvac. HVAC, at every load: it never warms up, it only thickens. */
+  hvac: '#9FA6B3',
+  /** --stage-good. Grid under threshold in an optimized plan. Grid only. */
+  good: '#7BEAAB',
 
   /* --- surfaces ---------------------------------------------------------- */
   /** Painted steel: enclosures, lattice, rails. Tinted per instance. */

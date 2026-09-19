@@ -118,6 +118,7 @@ export function AgentActivity() {
           {badge.label}
         </Badge>
       }
+      variant="panel"
       className="min-h-[360px]"
       bodyClassName="flex flex-col p-0!"
     >
@@ -188,9 +189,10 @@ export function AgentActivity() {
             aria-label="Scroll to the newest agent steps"
             className={clsx(
               'absolute bottom-3 left-1/2 z-10 -translate-x-1/2',
-              'inline-flex items-center gap-1 rounded-full border border-forecast/40',
-              'bg-surface-2 px-3 py-1 text-[11px] text-forecast shadow-lg',
-              'transition-colors hover:border-forecast/70 hover:bg-surface',
+              'inline-flex items-center gap-1 rounded-full px-3 py-1',
+              'bg-surface-2 text-[11px] text-ink-2 shadow-lg shadow-black/60',
+              'shadow-[inset_0_0_0_1px_var(--color-line-2)]',
+              'transition-colors duration-[var(--dur)] ease-[var(--ease)] hover:text-ink',
             )}
           >
             <ArrowDown aria-hidden className="h-3 w-3" />

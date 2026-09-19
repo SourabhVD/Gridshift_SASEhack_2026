@@ -28,12 +28,18 @@ import clsx from 'clsx';
 import { formatKw } from '@/lib/format';
 import { useSelected } from './interaction/selection';
 
+/**
+ * One dot per energy channel, in the channel's own UI colour -- the same key the
+ * plan rows and the chart legends use. EV and HVAC own colours of their own;
+ * they used to borrow the grid blue and the muted grey, which made the legend
+ * lie about two of the five conduits.
+ */
 const LEGEND: readonly { label: string; color: string }[] = [
   { label: 'Grid', color: 'var(--color-forecast)' },
-  { label: 'Solar', color: 'var(--color-peak)' },
+  { label: 'Solar', color: 'var(--color-solar)' },
   { label: 'Battery', color: 'var(--color-battery)' },
-  { label: 'EV', color: 'var(--color-forecast)' },
-  { label: 'HVAC', color: 'var(--color-muted)' },
+  { label: 'EV', color: 'var(--color-ev)' },
+  { label: 'HVAC', color: 'var(--color-hvac)' },
 ];
 
 /** How long the pointer has to rest on the scene before the hint is offered. */
@@ -110,7 +116,7 @@ function InspectHint({
         show ? 'opacity-100' : 'opacity-0',
       )}
     >
-      <span className="rounded-full border border-white/10 bg-black/45 px-2.5 py-1 text-[10px] tracking-wide text-white/70 backdrop-blur-sm">
+      <span className="rounded-full border border-white/12 bg-black/45 px-2.5 py-1 text-[10px] tracking-wide text-ink-2 backdrop-blur-sm">
         Click a device to inspect
       </span>
     </div>

@@ -29,15 +29,16 @@
  *
  * ## Colour
  *
- * Five channels, five colours, and exactly one of them may ever turn red:
+ * Five channels, five colours, and exactly ONE of them ever changes state --
+ * the grid. Everything else keeps its own colour at every load and in every
+ * mode, so an approve reads as one line changing rather than three:
  *
- *   grid      sky #38bdf8, or alert #ef4444 over the threshold
- *   solar     amber #f59e0b
- *   battery   violet #a78bfa, or good #10b981 when an optimized plan is
- *             discharging it
- *   ev        teal #2dd4bf, or good #10b981 when an optimized plan has shifted
- *             the charging away
- *   hvac      neutral #9ca3af, amber once it out-draws the chargers
+ *   grid      stage blue #6EA0FF; alert #FF7B75 over the threshold, good
+ *             #7BEAAB once an optimized plan is holding it under
+ *   solar     stage amber #FFBE5C
+ *   battery   stage violet #D5B8FF
+ *   ev        stage teal #4CD9C3
+ *   hvac      stage grey #9FA6B3 -- it never warms up, it only thickens
  *
  * ## Draw calls
  *
@@ -52,7 +53,7 @@ import { CatmullRomCurve3 } from 'three';
 import type { DevicesProps } from '../contracts';
 import { RESIDENCE_WALL_BATTERY, anchorsFor } from '../layout';
 import { BatteryCabinet } from './BatteryCabinet';
-import { C, DORMANT_KW, evPlan, isResidence, maxFlowKw, v3 } from './common';
+import { C, evPlan, isResidence, maxFlowKw, v3 } from './common';
 import { Conduit, conduitScale } from './Conduit';
 import { EvBays } from './EvBays';
 import { FlowParticles, type ParticleStream } from './FlowParticles';
@@ -70,9 +71,6 @@ import { RoofHvac } from './RoofHvac';
 import { RoofSolar } from './RoofSolar';
 import { Transformer } from './Transformer';
 import { Pickable, ringsFor } from '../interaction/Pickable';
-
-/** An optimized plan that has quietened the chargers this far gets the win colour. */
-const EV_QUIET_RATIO = 0.3;
 
 /** Conduit gauge. A utility feeder is not the same object as a domestic run. */
 const COMMERCIAL_RADII: [number, number] = [0.08, 0.22];
@@ -137,17 +135,16 @@ export function Devices({
   /* Colours ---------------------------------------------------------------- */
 
   const optimized = mode === 'optimized';
-  const discharging = flows.battery_kw > DORMANT_KW;
 
-  // Only the grid channel is ever allowed to take the alert red.
-  const gridColor = overThreshold ? C.alert : C.grid;
+  /* The grid is the only channel with states: red over the billed threshold,
+   * green once an optimized plan is holding it under. Every other conduit
+   * keeps its own channel colour in both modes -- three lines changing at once
+   * is why the approve moment used to land on nothing in particular. */
+  const gridColor = overThreshold ? C.alert : optimized ? C.good : C.grid;
   const solarColor = C.solar;
-  // In an optimized plan a discharging battery and a throttled charger are the
-  // agent's doing: colour them as the win they are. Same rule as the 2D wires.
-  const batteryColor = optimized && discharging ? C.good : C.battery;
-  const evColor = optimized && plan.ratio < EV_QUIET_RATIO ? C.good : C.ev;
-  // HVAC only earns the amber "biggest load" colour when it out-draws the EVs.
-  const hvacColor = flows.hvac_kw > 0 && flows.hvac_kw >= flows.ev_kw ? C.solar : C.hvac;
+  const batteryColor = C.battery;
+  const evColor = C.ev;
+  const hvacColor = C.hvac;
 
   /* Flow ------------------------------------------------------------------- */
 

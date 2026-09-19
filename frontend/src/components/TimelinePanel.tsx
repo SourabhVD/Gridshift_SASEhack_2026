@@ -47,10 +47,9 @@ export function TimelinePanel() {
 
   if (!forecast) {
     return (
-      <div
-        className="h-[72px] animate-pulse rounded-xl border border-line bg-surface"
-        aria-hidden="true"
-      />
+      <div className="border-y border-line-2 py-3" aria-hidden="true">
+        <div className="h-[52px] animate-pulse rounded bg-surface-2" />
+      </div>
     );
   }
 

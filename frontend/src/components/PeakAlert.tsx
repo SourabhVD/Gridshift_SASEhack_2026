@@ -4,32 +4,23 @@
  * PeakAlert -- the one call to action on the dashboard.
  *
  * Rendered only when the forecast actually contains a peak interval; otherwise
- * it returns null rather than an empty card. The right-hand slot is driven
+ * it returns null rather than an empty row. The right-hand slot is driven
  * entirely by runStatus, so the banner is the single place a facility manager
  * watches an agent run from start to decision.
+ *
+ * The tinted panel is gone. It was alerting twice -- a red wash AND a red
+ * border around text that already says 522. On black, one red dot and one red
+ * number is louder than both, and the row sits on the same rhythm as everything
+ * else on the page. Run GridShift is the only accent object in this region.
  */
 
 import clsx from 'clsx';
-import { AlertTriangle, Loader2, RotateCcw } from 'lucide-react';
+import { Loader2, RotateCcw } from 'lucide-react';
 
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { formatHour, formatKw } from '@/lib/format';
 import { useGridShift } from '@/lib/store';
-
-const PRIMARY_BUTTON = [
-  'inline-flex items-center gap-2 rounded-md px-4 py-2',
-  'text-sm font-semibold tracking-wide',
-  'bg-forecast text-[color:var(--color-base)]',
-  'transition hover:brightness-110',
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forecast',
-  'disabled:cursor-not-allowed disabled:brightness-100',
-].join(' ');
-
-const LINK_BUTTON = [
-  'inline-flex items-center gap-1.5 text-xs font-medium text-muted',
-  'underline-offset-4 transition-colors hover:text-ink hover:underline',
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forecast',
-].join(' ');
 
 export function PeakAlert() {
   const { summary, forecast, runStatus, events, plan, error, isLoading, startRun, reset } =
@@ -59,27 +50,38 @@ export function PeakAlert() {
   return (
     <div
       className={clsx(
-        'flex flex-col gap-4 rounded-xl border px-5 py-4',
-        'sm:flex-row sm:items-center sm:justify-between',
-        isApproved ? 'border-good/30 bg-good/10' : 'border-alert/30 bg-alert/10',
+        'flex flex-col gap-4 border-y border-line-2 py-4',
+        'sm:flex-row sm:items-center sm:justify-between sm:gap-6',
       )}
     >
       {/* ---------------------------------------------------------- headline */}
-      <div className="flex min-w-0 items-start gap-3">
-        <AlertTriangle
-          className={clsx('mt-0.5 h-5 w-5 shrink-0', isApproved ? 'text-good' : 'text-alert')}
+      <div className="flex min-w-0 items-start gap-3.5">
+        <span
           aria-hidden="true"
+          className={clsx(
+            'mt-1.5 h-[7px] w-[7px] shrink-0 rounded-full',
+            isApproved
+              ? 'bg-good shadow-[0_0_0_4px_rgba(90,229,150,0.14)]'
+              : 'bg-alert shadow-[0_0_0_4px_rgba(255,90,82,0.14)]',
+          )}
         />
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-ink">
-            {`Peak demand forecast: ${formatKw(peakKw)} at ${formatHour(
-              peakPoint.timestamp,
-            )}`}
+          <p className="text-sm font-medium text-ink">
+            Peak demand forecast{' '}
+            <span
+              className={clsx(
+                'tabular-nums',
+                isApproved ? 'text-good' : 'text-alert',
+              )}
+            >
+              {formatKw(peakKw)}
+            </span>{' '}
+            {`at ${formatHour(peakPoint.timestamp)}`}
           </p>
-          <p className="mt-0.5 text-xs text-muted">
+          <p className="mt-1 text-xs text-muted tabular-nums">
             {`${peaks.length} ${peaks.length === 1 ? 'hour' : 'hours'} above the ${formatKw(
               threshold,
-            )} threshold (${firstHour}–${lastHour})`}
+            )} threshold · ${firstHour}–${lastHour}`}
           </p>
           {error && runStatus !== 'failed' && (
             <p className="mt-1 text-xs text-alert">{error}</p>
@@ -90,22 +92,28 @@ export function PeakAlert() {
       {/* --------------------------------------------------------------- CTA */}
       <div className="flex shrink-0 flex-wrap items-center gap-3 sm:justify-end">
         {runStatus === 'idle' && (
-          <button
-            type="button"
+          <Button
+            variant="primary"
             onClick={() => void startRun()}
             disabled={isLoading}
-            className={clsx(PRIMARY_BUTTON, isLoading && 'opacity-60')}
+            icon={
+              isLoading ? (
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              ) : undefined
+            }
           >
-            {isLoading && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
             Run GridShift
-          </button>
+          </Button>
         )}
 
         {runStatus === 'running' && (
-          <button type="button" disabled className={PRIMARY_BUTTON}>
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+          <Button
+            variant="primary"
+            disabled
+            icon={<Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
+          >
             {`Agent investigating… ${events.length} steps`}
-          </button>
+          </Button>
         )}
 
         {runStatus === 'awaiting_approval' && (
@@ -113,10 +121,14 @@ export function PeakAlert() {
             <Badge tone="warn" dot>
               Plan ready · awaiting approval
             </Badge>
-            <button type="button" onClick={() => void runAgain()} className={LINK_BUTTON}>
-              <RotateCcw className="h-3 w-3" aria-hidden="true" />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void runAgain()}
+              icon={<RotateCcw className="h-3 w-3" aria-hidden="true" />}
+            >
               Run again
-            </button>
+            </Button>
           </>
         )}
 
@@ -131,10 +143,14 @@ export function PeakAlert() {
         {runStatus === 'rejected' && (
           <>
             <Badge tone="neutral">Plan rejected</Badge>
-            <button type="button" onClick={() => void runAgain()} className={LINK_BUTTON}>
-              <RotateCcw className="h-3 w-3" aria-hidden="true" />
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => void runAgain()}
+              icon={<RotateCcw className="h-3 w-3" aria-hidden="true" />}
+            >
               Run again
-            </button>
+            </Button>
           </>
         )}
 
@@ -143,10 +159,13 @@ export function PeakAlert() {
             <Badge tone="alert" className="max-w-[24rem] overflow-hidden text-ellipsis">
               {error ?? 'Agent run failed'}
             </Badge>
-            <button type="button" onClick={() => void startRun()} className={PRIMARY_BUTTON}>
-              <RotateCcw className="h-4 w-4" aria-hidden="true" />
+            <Button
+              variant="primary"
+              onClick={() => void startRun()}
+              icon={<RotateCcw className="h-4 w-4" aria-hidden="true" />}
+            >
               Retry
-            </button>
+            </Button>
           </>
         )}
       </div>

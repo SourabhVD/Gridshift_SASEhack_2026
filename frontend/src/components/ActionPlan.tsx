@@ -9,6 +9,9 @@
  * state here is the set of decisions currently in flight, which drives the
  * per-button spinners.
  *
+ * Flattened per option C: no card, no bordered rows. A section heading, a
+ * hairline-separated headline strip, then the actions as list rows.
+ *
  * NOTE: action.estimated_peak_reduction_kw is the per-action impact during the
  * BASELINE peak interval; those values deliberately do not sum to
  * plan.peak_reduction_kw, so no total of them is ever displayed.
@@ -19,6 +22,7 @@ import clsx from 'clsx';
 import { CircleAlert, ClipboardList } from 'lucide-react';
 import { ActionRow, type Decision } from '@/components/plan/ActionRow';
 import { Badge } from '@/components/ui/Badge';
+import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { formatKw, formatUsd } from '@/lib/format';
 import { useGridShift } from '@/lib/store';
@@ -55,9 +59,11 @@ function Stat({
   foot?: ReactNode;
 }) {
   return (
-    <div className="rounded-md bg-surface-2 p-3">
-      <p className="text-[11px] tracking-wide text-muted uppercase">{label}</p>
-      <p className="mt-1 text-sm font-medium text-ink tabular-nums">{value}</p>
+    <div className="bg-base px-4 py-3">
+      <p className="text-[11px] font-medium tracking-[0.09em] text-muted uppercase">
+        {label}
+      </p>
+      <p className="mt-1.5 text-sm font-medium text-ink tabular-nums">{value}</p>
       {foot && <div className="mt-1.5">{foot}</div>}
     </div>
   );
@@ -91,7 +97,7 @@ function HeadlineStrip({
   ).length;
 
   return (
-    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="grid grid-cols-1 gap-px border-y border-line bg-line sm:grid-cols-2 xl:grid-cols-4">
       <Stat
         label="Peak"
         value={[
@@ -145,7 +151,7 @@ function Rationale({ text }: { text: string }) {
     <div className="mt-4">
       <p
         className={clsx(
-          'border-l-2 border-forecast pl-3 text-sm text-muted',
+          'border-l border-line-strong pl-3 text-[13px] text-ink-2',
           !expanded && 'line-clamp-3',
         )}
       >
@@ -155,7 +161,7 @@ function Rationale({ text }: { text: string }) {
         type="button"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
-        className="mt-1.5 ml-3 text-xs font-medium text-forecast transition hover:brightness-110"
+        className="mt-1.5 ml-3 text-xs font-medium text-accent transition-[filter] duration-[var(--dur)] ease-[var(--ease)] hover:brightness-110"
       >
         {expanded ? 'Show less' : 'Show more'}
       </button>
@@ -167,14 +173,14 @@ function PlanSkeleton() {
   return (
     <div>
       <p className="text-sm text-muted">Waiting for optimizer{'…'}</p>
-      <div className="mt-4 space-y-3">
+      <div className="mt-4">
         {[0, 1, 2].map((i) => (
           <div
             key={i}
-            className="flex animate-pulse gap-4 rounded-md border border-line p-4"
+            className="flex animate-pulse gap-4 border-t border-line py-4"
             aria-hidden="true"
           >
-            <div className="h-9 w-9 shrink-0 rounded-md bg-surface-2" />
+            <div className="mt-2 h-[7px] w-[7px] shrink-0 rounded-full bg-surface-2" />
             <div className="flex-1 space-y-2 py-0.5">
               <div className="h-3 w-2/5 rounded bg-surface-2" />
               <div className="h-3 w-4/5 rounded bg-surface-2" />
@@ -189,7 +195,7 @@ function PlanSkeleton() {
 
 function EmptyState() {
   return (
-    <div className="flex h-full min-h-[200px] flex-col items-center justify-center gap-3 text-center">
+    <div className="flex h-full min-h-[160px] flex-col items-center justify-center gap-3 text-center">
       <ClipboardList className="h-6 w-6 text-muted" aria-hidden="true" />
       <p className="text-sm text-muted">No plan yet. Run GridShift to generate one.</p>
     </div>
@@ -239,10 +245,10 @@ export function ActionPlan() {
 
   return (
     <Card
+      variant="flat"
       title="Recommended actions"
       subtitle={'Optimizer output ' + DOT + ' requires approval'}
       right={planBadge(plan?.status ?? runStatus)}
-      className="min-h-[300px]"
     >
       {plan === null ? (
         runStatus === 'running' ? (
@@ -263,7 +269,7 @@ export function ActionPlan() {
 
           <Rationale text={plan.summary} />
 
-          <ul className="mt-4 space-y-3">
+          <ul className="mt-4">
             {plan.actions.map((action) => (
               <ActionRow
                 key={action.id}
@@ -276,29 +282,31 @@ export function ActionPlan() {
           </ul>
 
           {pendingIds.length > 0 && (
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-line pt-4">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line-2 pt-4">
               <span className="text-xs text-muted tabular-nums">
                 {pendingIds.length} pending
               </span>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
+                {/* Secondary on purpose: the accent in this region belongs to
+                    the per-row Approve buttons, not to the bulk shortcut. */}
+                <Button
+                  variant="secondary"
+                  size="sm"
                   aria-label="Approve all pending actions"
                   onClick={() => void runBulk(pendingIds, 'approve')}
                   disabled={anyInFlight}
-                  className="rounded-md bg-good px-3 py-1.5 text-xs font-medium text-[color:var(--color-base)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Approve all
-                </button>
-                <button
-                  type="button"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   aria-label="Reject all pending actions"
                   onClick={() => void runBulk(pendingIds, 'reject')}
                   disabled={anyInFlight}
-                  className="rounded-md px-3 py-1.5 text-xs font-medium text-muted transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   Reject all
-                </button>
+                </Button>
               </div>
             </div>
           )}

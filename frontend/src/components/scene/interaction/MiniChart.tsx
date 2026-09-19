@@ -7,10 +7,14 @@
  * point of it is that it costs nothing to open. Everything it draws is a rule
  * of the dashboard rather than a decoration —
  *
- *   bars        the baseline forecast, muted
- *   line        the optimized plan, in the win colour, only when a plan exists
- *   hairline    the hour the whole dashboard is showing (`viewHour`)
- *   threshold   the billed demand ceiling, dashed, grid and building only
+ *   bars        the baseline forecast, in this device's own channel colour at
+ *               45 % -- it is the same quantity the line is, one plan earlier
+ *   line        the optimized plan, the SAME channel colour at full strength,
+ *               only when a plan exists. The channel never changes hue between
+ *               the two modes; only its weight does.
+ *   hairline    the hour the whole dashboard is showing (`viewHour`), in ink
+ *   threshold   the billed demand ceiling, dashed, in alert, grid and building
+ *               only
  *   shading     hours the forecast crosses that ceiling
  *
  * Clicking (or arrowing onto) a column moves `viewHour`, so the chart is a
@@ -43,6 +47,11 @@ export interface MiniChartProps {
   /** Battery kW is the one signed series: it gets a zero rule and bars both ways. */
   signed?: boolean;
   label: string;
+  /**
+   * This device's channel colour, as a CSS colour string. Both series take it:
+   * the baseline at 45 %, the optimized plan at full opacity.
+   */
+  color: string;
 }
 
 function extent(series: readonly number[][], signed: boolean, threshold: number | null) {
@@ -69,6 +78,7 @@ export function MiniChart({
   threshold,
   signed = false,
   label,
+  color,
 }: MiniChartProps) {
   const id = useId();
   const series = optimized ? [baseline as number[], optimized as number[]] : [baseline as number[]];
@@ -96,7 +106,7 @@ export function MiniChart({
       aria-valuemax={23}
       aria-valuenow={hour}
       aria-valuetext={formatHourIndex(hour)}
-      className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-forecast/60"
+      className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-accent/60"
       onKeyDown={(event) => {
         if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
           event.preventDefault();
@@ -147,8 +157,8 @@ export function MiniChart({
               width={COL - BAR_GAP}
               height={height}
               rx={1}
-              fill="var(--color-muted)"
-              opacity={index === hour ? 0.65 : 0.32}
+              fill={color}
+              opacity={index === hour ? 0.7 : 0.45}
             />
           );
         })}
@@ -159,7 +169,7 @@ export function MiniChart({
             x2={W}
             y1={zeroY}
             y2={zeroY}
-            stroke="var(--color-line)"
+            stroke="var(--line-2, rgba(255,255,255,0.12))"
             strokeWidth={1}
           />
         ) : null}
@@ -181,7 +191,7 @@ export function MiniChart({
           <path
             d={path}
             fill="none"
-            stroke="var(--color-good)"
+            stroke={color}
             strokeWidth={1.5}
             strokeLinejoin="round"
             strokeLinecap="round"
@@ -196,7 +206,7 @@ export function MiniChart({
           y2={PAD_T + PLOT_H + 3}
           stroke="var(--color-ink)"
           strokeWidth={1}
-          opacity={0.55}
+          opacity={0.6}
         />
 
         {/* hit targets */}

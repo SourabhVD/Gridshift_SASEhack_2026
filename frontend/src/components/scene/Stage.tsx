@@ -36,16 +36,17 @@ import { lotOf } from './Environment';
  * tint and `bg-base` all have to be the same black or the frame shows up as a
  * rectangle exactly where the hero is trying not to have one.
  */
-export const PAGE_BASE = '#0a0f1a';
+export const PAGE_BASE = '#000000';
 
 /**
  * How dark the sun's cast shadow is allowed to get on the bare page. Lower than
  * it would be on a lawn: there is no lit surface next to it to judge it
  * against, so a shadow that reads as "strong sunlight" outdoors reads as a hole
- * punched in the dashboard here. A touch stronger than it was inside a card --
- * the page is darker than the card was, so the same opacity read as nothing.
+ * punched in the dashboard here. Raised again for the true-black page -- a
+ * shadow tinted #000 over a #000 ground has nothing left to darken, so what
+ * actually reads is the alpha, and 0.36 of it had stopped registering.
  */
-const SUN_SHADOW_OPACITY = 0.36;
+const SUN_SHADOW_OPACITY = 0.4;
 /** The contact pool is lighter; the two stack wherever both apply. */
 const CONTACT_OPACITY = 0.22;
 

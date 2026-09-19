@@ -4,8 +4,8 @@
  * The rings that mark whatever the agent is looking at right now -- the 3D
  * counterpart of the 2D diagram's `gsflow-pulse` halo.
  *
- * Restrained on purpose: a hairline ring, sky blue, pushed just past the bloom
- * threshold so it reads as drawn light rather than painted paint, held at low
+ * Restrained on purpose: a hairline ring in the grid blue, pushed just past the
+ * bloom threshold so it reads as drawn light rather than as paint, held at low
  * opacity and breathing once every 1.4 s. It is a pointer, not a spotlight.
  *
  * One ring per active node, all of them in a single InstancedMesh with a single

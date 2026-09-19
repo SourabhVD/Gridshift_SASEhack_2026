@@ -1,49 +1,181 @@
 @import "tailwindcss";
 
 /* ---------------------------------------------------------------------------
-   GridShift "dark ops" theme.
-   Every color lives here once. Components must use the Tailwind utilities
-   generated from these tokens (bg-surface, text-muted, text-peak, border-line,
-   ...) or the raw CSS variables (var(--color-peak)) when a library such as
-   Recharts needs a literal color string in JS.
+   GridShift -- "true black, one accent".
+
+   Source of truth: the GridShift Palette artifact. Every colour in the product
+   lives here once; components use the Tailwind utilities generated from the
+   @theme block (bg-base, bg-surface, border-line, text-ink, text-muted,
+   text-accent, text-grid, ...) or the raw custom properties (var(--color-peak))
+   when a library such as Recharts needs a literal colour string in JS.
+
+   Two rules the palette turns on:
+     - Green (--color-good) means "the grid came in under threshold" and nothing
+       else. It is never a button.
+     - The accent (Relay magenta) means "act" or "live". At most ONE accent
+       object per viewport region, never on data.
    --------------------------------------------------------------------------- */
 
 @theme {
-  /* Structure */
-  --color-base: #0a0f1a; /* page background            -> bg-base */
-  --color-surface: #111827; /* card background            -> bg-surface */
-  --color-surface-2: #16202f; /* elevated / hovered surface -> bg-surface-2 */
-  --color-line: #1f2937; /* borders, dividers, grid    -> border-line */
+  /* -- structure ---- bg-base, bg-surface, bg-surface-2 -------------------- */
+  --color-base: #000000; /* page, and the ground the 3D stage bleeds into */
+  --color-surface: #0b0b0d; /* the two chart panels. No border, radius 12   */
+  --color-surface-2: #141417; /* hover / pressed row, tooltip, skeleton      */
 
-  /* Text */
-  --color-ink: #e5e7eb; /* primary text               -> text-ink */
-  --color-muted: #9ca3af; /* secondary text             -> text-muted */
+  /* -- hairline ramp ---- border-line, border-line-2, ring-line-strong -----
+     Alpha, not solid, so the same rule holds on base AND on surface.        */
+  --color-line: rgba(255, 255, 255, 0.07); /* divider inside a group         */
+  --color-line-2: rgba(255, 255, 255, 0.12); /* section edge, panel edge     */
+  --color-line-strong: rgba(255, 255, 255, 0.2); /* hovered / focused row    */
 
-  /* Data accents */
-  --color-forecast: #38bdf8; /* sky    - forecast series   -> text-forecast */
-  --color-peak: #f59e0b; /* amber  - peak / warning    -> text-peak */
-  --color-alert: #ef4444; /* red    - over threshold    -> text-alert */
-  --color-good: #10b981; /* emerald- savings / ok      -> text-good */
-  --color-battery: #a78bfa; /* violet - battery / storage -> text-battery */
+  /* -- text ---- text-ink, text-ink-2, text-muted -------------------------- */
+  --color-ink: #ededef; /* 93% white. Values, headings.           17.96:1 */
+  --color-ink-2: #a8a8ae; /* body, descriptions, meta lines.         8.88:1 */
+  --color-muted: #8a8a92; /* 11px labels, units, axis ticks.         6.13:1 */
 
-  /* Fonts (provided by next/font in layout.tsx) */
+  /* -- accent ---- bg-accent, text-accent, text-accent-ink ----------------
+     White on the accent fails (3.03:1); the label is always accent-ink.     */
+  --color-accent: #ff4fa6; /* Relay. Actions + live state only.      6.92:1 */
+  --color-accent-ink: #000000;
+
+  /* -- energy channels ---- text-grid / text-solar / text-battery /
+        text-ev / text-hvac / text-alert / text-good / text-peak ----------- */
+  --color-forecast: #4a88ff; /* alias kept so no call site changes: == grid */
+  --color-grid: #4a88ff; /* utility import. The only channel with states */
+  --color-solar: #ffae33;
+  --color-battery: #cba6ff;
+  --color-ev: #1fcfb4;
+  --color-hvac: #8790a0;
+  --color-alert: #ff5a52; /* grid over threshold                          */
+  --color-good: #5ae596; /* grid optimized / plan approved               */
+  --color-peak: #ffae33; /* peak-hour tone. Same value as solar.         */
+
+  /* -- fonts (provided by next/font in layout.tsx) ------------------------- */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-html {
+/* ---------------------------------------------------------------------------
+   Raw aliases + motion constants.
+
+   --line-1/-2/-3 are the hairline ramp under the names the design docs use;
+   they are the same three values the border-line* utilities resolve to.
+   --stage-* is the emissive ramp for the 3D scene: same hues lifted ~20%
+   toward white, because bloom eats saturation before it adds light. WebGL
+   materials cannot read custom properties, so scene/devices/common.ts keeps
+   its own copy -- these are the reference values it must match.
+   --------------------------------------------------------------------------- */
+
+:root {
   color-scheme: dark;
+
+  --line-1: var(--color-line);
+  --line-2: var(--color-line-2);
+  --line-3: var(--color-line-strong);
+
+  --accent-wash: rgba(255, 79, 166, 0.12);
+
+  /* The peak-price wash behind a chart's peak window. Declared here rather
+     than in @theme: Tailwind drops a --color-* token that no utility uses,
+     and this one is only ever read as a literal by Recharts. */
+  --color-peak-band: rgba(255, 174, 51, 0.1);
+
+  --stage-grid: #6ea0ff;
+  --stage-solar: #ffbe5c;
+  --stage-battery: #d5b8ff;
+  --stage-ev: #4cd9c3;
+  --stage-hvac: #9fa6b3;
+  --stage-alert: #ff7b75;
+  --stage-good: #7beaab;
+  --stage-ground: #0d0f13;
+
+  /* One duration, one curve, for every UI transition on the page. */
+  --dur: 330ms;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 }
 
-body {
-  background-color: var(--color-base);
-  color: var(--color-ink);
-  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
+@layer base {
+  body {
+    background: var(--color-base);
+    color: var(--color-ink);
+    font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* The focus ring is the accent, everywhere. Utilities still override it. */
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 3px;
+  }
+
+  /* Thin dark scrollbars so panels (agent log, action list) stay on-theme. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
 }
 
-/* Thin dark scrollbars so panels (agent log, action list) stay on-theme. */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-line) transparent;
+/* ---------------------------------------------------------------------------
+   Motion. Everything below animates opacity and transform only -- three.js
+   plus the bloom pass already owns the frame budget, so nothing here may touch
+   layout.
+   --------------------------------------------------------------------------- */
+
+@keyframes gs-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/**
+ * First-paint entrance. Set --i on the element (or let .gs-stagger set it from
+ * source order) to place it in the 60ms cascade. Five groups max, so the page
+ * is settled inside ~600ms.
+ */
+.gs-rise {
+  animation: gs-rise var(--dur) var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+
+.gs-stagger > * {
+  animation: gs-rise var(--dur) var(--ease) both;
+  animation-delay: calc(var(--i, 0) * 60ms);
+}
+.gs-stagger > *:nth-child(1) {
+  --i: 0;
+}
+.gs-stagger > *:nth-child(2) {
+  --i: 1;
+}
+.gs-stagger > *:nth-child(3) {
+  --i: 2;
+}
+.gs-stagger > *:nth-child(4) {
+  --i: 3;
+}
+.gs-stagger > *:nth-child(5) {
+  --i: 4;
+}
+/* Hard cap: a sixth group would push first paint past 600ms. */
+.gs-stagger > *:nth-child(n + 6) {
+  --i: 4;
+}
+
+/** Digits that stack in a column must not reflow while a count-up runs. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

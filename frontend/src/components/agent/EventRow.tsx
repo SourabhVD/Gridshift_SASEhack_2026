@@ -85,7 +85,7 @@ export function EventRow({ event, continuesBelow, expanded, onToggle }: EventRow
           </span>
         </div>
 
-        <p className="mt-1 text-sm leading-relaxed text-ink">{event.message}</p>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-2">{event.message}</p>
 
         {event.payload && (
           <PayloadDetails

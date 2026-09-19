@@ -86,7 +86,7 @@ const TICK_HOURS: readonly number[] = HOUR_LIST.filter((h) => h % 3 === 0);
  */
 const SCRUBBER_CSS = `
 @keyframes gsscrub-attention {
-  0%, 60% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-good) 40%, transparent); }
+  0%, 60% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ink) 45%, transparent); }
   100% { box-shadow: 0 0 0 2px transparent; }
 }
 .gsscrub-attention { animation: gsscrub-attention 1.5s ease-out 1 both; }
@@ -203,17 +203,17 @@ function Sparkline({
         x2={SPARK_W}
         y1={thresholdY}
         y2={thresholdY}
-        stroke="var(--color-peak)"
+        stroke="var(--color-alert)"
         strokeWidth={1}
         strokeDasharray="4 3"
-        opacity={0.55}
+        opacity={0.7}
         vectorEffect="non-scaling-stroke"
       />
       <polyline
         points={points}
         fill="none"
         stroke="var(--color-forecast)"
-        strokeWidth={1.5}
+        strokeWidth={2}
         strokeLinecap="round"
         strokeLinejoin="round"
         opacity={0.7}
@@ -416,8 +416,8 @@ function TimeScrubberImpl({
   return (
     <div
       className={clsx(
-        'flex flex-col gap-3 rounded-xl border border-line bg-surface px-4 py-3',
-        'sm:h-[72px] sm:flex-row sm:items-center sm:gap-4',
+        'flex flex-col gap-3 border-y border-line-2 py-3',
+        'sm:h-[76px] sm:flex-row sm:items-center sm:gap-5',
         className,
       )}
     >
@@ -431,11 +431,12 @@ function TimeScrubberImpl({
           aria-label={isPlaying ? 'Pause playback' : 'Play 24-hour timeline'}
           aria-pressed={isPlaying}
           className={clsx(
-            'flex h-8 w-8 items-center justify-center rounded-md transition-colors',
-            'focus-visible:ring-2 focus-visible:ring-forecast/50 focus-visible:outline-none',
+            'flex h-8 w-8 items-center justify-center rounded-md',
+            'transition duration-[var(--dur)] ease-[var(--ease)] active:scale-[0.97]',
+            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
             isPlaying
-              ? 'bg-surface-2 text-ink hover:bg-line'
-              : 'bg-forecast text-[color:var(--color-base)] hover:brightness-110',
+              ? 'bg-surface-2 text-ink hover:brightness-125'
+              : 'bg-accent text-accent-ink hover:brightness-110',
           )}
         >
           {isPlaying ? (
@@ -454,7 +455,7 @@ function TimeScrubberImpl({
             className={clsx(
               'flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors',
               'hover:bg-surface-2 hover:text-ink',
-              'focus-visible:ring-2 focus-visible:ring-forecast/50 focus-visible:outline-none',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               'disabled:pointer-events-none disabled:opacity-35',
             )}
           >
@@ -468,7 +469,7 @@ function TimeScrubberImpl({
             className={clsx(
               'flex h-7 w-7 items-center justify-center rounded-md text-muted transition-colors',
               'hover:bg-surface-2 hover:text-ink',
-              'focus-visible:ring-2 focus-visible:ring-forecast/50 focus-visible:outline-none',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               'disabled:pointer-events-none disabled:opacity-35',
             )}
           >
@@ -493,7 +494,7 @@ function TimeScrubberImpl({
             <div
               className={clsx(
                 'pointer-events-none absolute bottom-full z-30 mb-2 -translate-x-1/2',
-                'rounded-md border border-line bg-surface-2 px-2 py-1 shadow-lg',
+                'rounded-md bg-surface-2 px-2 py-1 shadow-lg shadow-black/60',
                 'text-[11px] whitespace-nowrap text-ink tabular-nums',
               )}
               style={{ left: `${cellCenterPct(hoverHour)}%` }}
@@ -522,8 +523,8 @@ function TimeScrubberImpl({
             onKeyDown={handleKeyDown}
             className={clsx(
               'relative h-8 w-full touch-none select-none',
-              'rounded-md border border-line bg-surface-2/50',
-              'focus-visible:ring-2 focus-visible:ring-forecast/50 focus-visible:outline-none',
+              'rounded-[5px] bg-surface-2',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               isDragging ? 'cursor-grabbing' : 'cursor-pointer',
             )}
           >
@@ -544,8 +545,8 @@ function TimeScrubberImpl({
                 <div
                   key={h}
                   className={clsx(
-                    'flex-1 border-r border-line/40 last:border-r-0',
-                    peakSet.has(h) && 'bg-alert/15',
+                    'flex-1 border-r border-line last:border-r-0',
+                    peakSet.has(h) && 'bg-peak/10',
                     hoverHour === h && 'bg-ink/5',
                     h < safeNowHour && 'opacity-70',
                   )}
@@ -566,12 +567,12 @@ function TimeScrubberImpl({
             {/* playhead */}
             <div
               className={clsx(
-                'pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-forecast',
+                'pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 bg-ink',
                 playheadTransition && 'transition-[left] duration-150 ease-out',
               )}
               style={{ left: `${cellCenterPct(safeHour)}%` }}
             >
-              <span className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-forecast ring-4 ring-forecast/20" />
+              <span className="absolute top-1/2 left-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-ink ring-4 ring-ink/20" />
             </div>
           </div>
         </div>
@@ -599,7 +600,7 @@ function TimeScrubberImpl({
         <div
           role="group"
           aria-label="Load series"
-          className="inline-flex rounded-md border border-line"
+          className="inline-flex rounded-md shadow-[inset_0_0_0_1px_var(--color-line-2)]"
         >
           <button
             type="button"
@@ -607,7 +608,7 @@ function TimeScrubberImpl({
             aria-pressed={mode === 'baseline'}
             className={clsx(
               'rounded-l-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors',
-              'focus-visible:ring-2 focus-visible:ring-forecast/50 focus-visible:outline-none',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               mode === 'baseline'
                 ? 'bg-surface-2 text-ink'
                 : 'text-muted hover:text-ink',
@@ -622,8 +623,9 @@ function TimeScrubberImpl({
             aria-pressed={mode === 'optimized'}
             title={canToggleMode ? undefined : 'Run GridShift to generate a plan'}
             className={clsx(
-              'rounded-r-[5px] border-l border-line px-2.5 py-1 text-[11px] font-medium transition-colors',
-              'focus-visible:ring-2 focus-visible:ring-forecast/50 focus-visible:outline-none',
+              'rounded-r-[5px] px-2.5 py-1 text-[11px] font-medium transition-colors',
+              'shadow-[inset_1px_0_0_0_var(--color-line-2)]',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
               'disabled:cursor-not-allowed disabled:text-muted/40',
               mode === 'optimized' && canToggleMode
                 ? 'bg-surface-2 text-ink'

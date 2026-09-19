@@ -215,7 +215,7 @@ export function EvBays({ accent, bays, activeBays }: EvGlyphProps) {
           cx={left + i * spacing}
           cy={28}
           r={3}
-          fill={i < active ? accent : 'var(--color-line)'}
+          fill={i < active ? accent : 'var(--line-3, rgba(255,255,255,0.20))'}
         />
       ))}
     </g>

@@ -48,7 +48,9 @@ export function Wire({ geometry, reverse = false, kw, maxKw, color, label }: Wir
       <path
         d={d}
         fill="none"
-        stroke="var(--color-line)"
+        /* The unenergised track. The divider hairline is 7 % white, which is
+           nothing on pure black, so the track takes the top of the ramp. */
+        stroke="var(--line-3, rgba(255,255,255,0.20))"
         strokeWidth={2}
         strokeLinecap="round"
         className="gsflow-tween"

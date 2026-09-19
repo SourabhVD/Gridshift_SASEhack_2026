@@ -38,9 +38,10 @@ const TYPE_ICON: Record<BuildingType, LucideIcon> = {
 };
 
 const TRIGGER = [
-  'inline-flex max-w-[16rem] items-center gap-2 rounded-md border border-line bg-surface',
-  'px-3 py-1.5 text-sm text-ink transition-colors hover:border-forecast/40',
-  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-forecast',
+  'inline-flex max-w-[18rem] items-center gap-2 rounded-md -mx-1 px-1 py-1',
+  'text-[15px] font-medium text-ink',
+  'transition-colors duration-[var(--dur)] ease-[var(--ease)] hover:text-ink',
+  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
 ].join(' ');
 
 /** 150_000 -> "150k sqft", 9_800 -> "9.8k sqft". */
@@ -132,7 +133,7 @@ export function BuildingSelector() {
   /* One site (or none loaded yet): there is nothing to choose between. */
   if (buildings.length <= 1) {
     return (
-      <span className="flex min-w-0 items-center gap-2 text-sm text-muted">
+      <span className="flex min-w-0 items-center gap-2 text-[15px] font-medium text-ink">
         {building && <TypeIcon type={building.type} className="h-4 w-4 shrink-0" />}
         <span className="truncate">{name}</span>
         {isLoading && (
@@ -153,14 +154,13 @@ export function BuildingSelector() {
         aria-label="Select building"
         className={TRIGGER}
       >
-        {building && <TypeIcon type={building.type} className="h-4 w-4 shrink-0 text-muted" />}
         <span className="truncate">{name}</span>
         {isLoading && (
-          <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-forecast" aria-hidden="true" />
+          <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-accent" aria-hidden="true" />
         )}
         <ChevronDown
           className={clsx(
-            'h-3.5 w-3.5 shrink-0 text-muted transition-transform',
+            'h-4 w-4 shrink-0 text-muted transition-transform duration-[var(--dur)] ease-[var(--ease)]',
             open && 'rotate-180',
           )}
           aria-hidden="true"
@@ -171,7 +171,7 @@ export function BuildingSelector() {
         <div
           role="listbox"
           aria-label="Buildings"
-          className="absolute top-full left-0 z-20 mt-1 w-80 rounded-lg border border-line bg-surface-2 p-1 shadow-xl"
+          className="absolute top-full left-0 z-20 mt-2 w-80 rounded-xl bg-surface p-1 shadow-2xl shadow-black/70 ring-1 ring-line-2"
         >
           {buildings.map((b, index) => {
             const selected = b.id === buildingId;
@@ -187,12 +187,13 @@ export function BuildingSelector() {
                 onClick={() => choose(b.id)}
                 onKeyDown={(event) => onOptionKeyDown(event, index)}
                 className={clsx(
-                  'flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-left transition-colors',
-                  'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-forecast',
-                  selected ? 'bg-surface' : 'hover:bg-surface',
+                  'flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left',
+                  'transition-colors duration-[var(--dur)] ease-[var(--ease)]',
+                  'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+                  selected ? 'bg-surface-2' : 'hover:bg-surface-2',
                 )}
               >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line bg-base">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-surface-2 ring-1 ring-line">
                   <TypeIcon type={b.type} className="h-4 w-4 text-muted" />
                 </span>
 
@@ -205,7 +206,7 @@ export function BuildingSelector() {
                   </span>
                 </span>
 
-                {selected && <Check className="h-4 w-4 shrink-0 text-forecast" aria-hidden="true" />}
+                {selected && <Check className="h-4 w-4 shrink-0 text-accent" aria-hidden="true" />}
               </button>
             );
           })}
