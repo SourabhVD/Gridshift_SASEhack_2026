@@ -16,8 +16,10 @@
  * the meter, and a single car reversed in. The lead is only drawn while the car
  * is actually charging; the rest of the time the coil hangs on the wall.
  *
- * Draw calls -- commercial 8 (apron, pedestals, lit quads + lamps, leads, and
- * the four car material clusters), residence 9.
+ * Draw calls -- commercial 5 (apron, pedestals, lit quads, leads, and the one
+ * InstancedMesh every car on the court shares), residence 5. If the car model
+ * fails to load the procedural stand-in takes those to 9 and 9, which is what
+ * they were before the model landed.
  */
 
 import { useEffect, useMemo } from 'react';
@@ -25,15 +27,7 @@ import { CatmullRomCurve3, TubeGeometry, Vector3 } from 'three';
 import type { BuildingType } from '@/types/api';
 import { formatKw } from '@/lib/format';
 import { C, DORMANT_KW, MAT, type EvPlan, glow, hash01, isResidence } from './common';
-import {
-  Car,
-  CarClusters,
-  carPaint,
-  chargePort,
-  emptyCarPieces,
-  pushCar,
-  type CarPieces,
-} from './Car';
+import { Car, CarFleet, chargePort, type CarPlacement } from './Car';
 import { Boxes, Clones, RoundedBoxes, type Piece } from './Instanced';
 import { NodeLabel } from './NodeLabel';
 import { RESIDENCE } from './paths';
@@ -96,11 +90,12 @@ interface Court {
   ground: Piece[];
   /** Powder-coated pedestal shells. */
   pedestals: Piece[];
-  /** Unlit quads: the screens, plus every car's lamp lenses. */
+  /** Unlit quads: the pedestal screens. */
   lit: Piece[];
   /** One per live bay; the lead geometry is instanced onto these. */
   leads: Piece[];
-  cars: CarPieces;
+  /** One entry per occupied bay; `<CarFleet>` turns these into instances. */
+  cars: CarPlacement[];
 }
 
 function buildCourt(bays: number, activeBays: number, evKw: number, accent: string): Court {
@@ -108,7 +103,7 @@ function buildCourt(bays: number, activeBays: number, evKw: number, accent: stri
   const pedestals: Piece[] = [];
   const lit: Piece[] = [];
   const leads: Piece[] = [];
-  const cars = emptyCarPieces();
+  const cars: CarPlacement[] = [];
 
   const rowW = bays * BAY_W;
 
@@ -138,12 +133,8 @@ function buildCourt(bays: number, activeBays: number, evKw: number, accent: stri
     });
 
     if (active) leads.push({ p: [x, 0, PEDESTAL_Z], s: [1, 1, 1] });
-    if (occupied) pushCar(cars, { at: [x, 0, CAR_Z], color: carPaint(i, active) });
+    if (occupied) cars.push({ at: [x, 0, CAR_Z], paint: i, active });
   }
-
-  // Lamp lenses ride in the same unlit cluster as the screens: same material,
-  // one fewer draw call, and the colours keep them under the bloom threshold.
-  lit.push(...cars.lamp);
 
   return { ground, pedestals, lit, leads, cars };
 }
@@ -315,7 +306,7 @@ export function EvBays({ type, position, plan, totalBays, evKw, accent }: EvBays
         <meshStandardMaterial color="#ffffff" {...MAT.powder} />
       </RoundedBoxes>
 
-      {/* Screens and lamp lenses. Unlit; only the live screens are above the cut. */}
+      {/* Pedestal screens. Unlit; only the live ones are above the cut. */}
       <Boxes pieces={court.lit} castShadow={false}>
         <meshBasicMaterial color="#ffffff" toneMapped={false} />
       </Boxes>
@@ -324,7 +315,7 @@ export function EvBays({ type, position, plan, totalBays, evKw, accent }: EvBays
         <meshStandardMaterial color={C.rubber} {...MAT.rubber} />
       </Clones>
 
-      <CarClusters pieces={court.cars} withLamps={false} />
+      <CarFleet placements={court.cars} />
 
       <NodeLabel
         position={[rowW / 2, 3.4, 0]}
