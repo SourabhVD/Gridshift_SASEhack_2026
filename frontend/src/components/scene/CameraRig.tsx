@@ -30,7 +30,7 @@
  */
 
 import { useMemo, useRef, useSyncExternalStore } from 'react';
-import { useFrame, useThree } from '@react-three/fiber';
+import { useFrame } from '@react-three/fiber';
 import { PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import type { BuildingType } from '@/types/api';
@@ -144,43 +144,11 @@ function mediaStore(query: string) {
 }
 
 const MOTION = mediaStore('(prefers-reduced-motion: reduce)');
-/** Matches the card's own breakpoint: below this it is a bottom sheet. */
-const SIDE_CARD = mediaStore('(min-width: 640px)');
 const FALSE = () => false;
 
 /** True when the viewer has asked for no animation; then every move is a cut. */
 function useReducedMotion(): boolean {
   return useSyncExternalStore(MOTION.subscribe, MOTION.read, FALSE);
-}
-
-/** True when the detail card takes a column out of the right of the frame. */
-function useSideCard(): boolean {
-  return useSyncExternalStore(SIDE_CARD.subscribe, SIDE_CARD.read, FALSE);
-}
-
-/**
- * How far to slide the frustum sideways so the subject is not behind the card.
- *
- * `filmOffset` skews the projection instead of turning the camera, so the
- * close-up keeps the bearing it was composed at and simply sits left of centre.
- * The shift is expressed as a fraction of the half-frame and converted into
- * three's film units: the card plus its margins, as a share of the canvas,
- * capped so a narrow panel cannot throw the subject off the left edge.
- */
-const CARD_COLUMN_PX = 300 + 24;
-/**
- * Only part of the way. The card is glass, not a wall -- the scene reads
- * through it -- so clearing it completely would throw the subject against the
- * left edge for no gain. Sixty per cent of the card's share, capped, puts the
- * subject at about a third of the frame, which is where it wants to be anyway.
- */
-const SKEW_SHARE = 0.6;
-const MAX_SKEW_FRACTION = 0.3;
-
-function cardSkew(canvasWidth: number, aspect: number): number {
-  if (canvasWidth <= 0) return 0;
-  const fraction = Math.min(MAX_SKEW_FRACTION, (CARD_COLUMN_PX / canvasWidth) * SKEW_SHARE);
-  return fraction * Math.tan((FOV / 2) * DEG) * aspect * 35;
 }
 
 /**
@@ -258,8 +226,6 @@ export function CameraRig({ type, activeNodes, evBays, hvacZones }: CameraRigPro
   const store = useSelectionStore();
   const selected = useSelected();
   const reduced = useReducedMotion();
-  const sideCard = useSideCard();
-  const canvasWidth = useThree((state) => state.size.width);
 
   const lot = useMemo(() => lotBounds(type), [type]);
   /* Allocating a Vector3 per frame is the one thing a rig must not do, so the
@@ -278,7 +244,6 @@ export function CameraRig({ type, activeNodes, evBays, hvacZones }: CameraRigPro
   /* The drag offset, damped separately and much harder. */
   const lookAz = useRef(0);
   const lookEl = useRef(0);
-  const skew = useRef(0);
   const fitted = useRef({ aspect: 0, radius: 0, lot });
 
   /* Scratch, so useFrame allocates nothing. */
@@ -354,19 +319,6 @@ export function CameraRig({ type, activeNodes, evBays, hvacZones }: CameraRigPro
       elevation.current = THREE.MathUtils.damp(elevation.current, desiredElevation, lambda, dt);
       lookAz.current = THREE.MathUtils.damp(lookAz.current, store.look.az, DRAG_LAMBDA, dt);
       lookEl.current = THREE.MathUtils.damp(lookEl.current, store.look.el, DRAG_LAMBDA, dt);
-    }
-
-    /* Slide the frame, not the camera: the subject moves out from under the
-       detail card without the composed bearing changing at all. */
-    const desiredSkew =
-      shot && sideCard ? cardSkew(canvasWidth, camera.aspect || 16 / 9) : 0;
-    const nextSkew = reduced
-      ? desiredSkew
-      : THREE.MathUtils.damp(skew.current, desiredSkew, SHOT_LAMBDA, dt);
-    if (Math.abs(nextSkew - skew.current) > 0.002 || camera.filmOffset !== nextSkew) {
-      skew.current = nextSkew;
-      camera.filmOffset = nextSkew;
-      camera.updateProjectionMatrix();
     }
 
     const dir = viewDirection(

@@ -120,10 +120,18 @@ const SelectionContext = createContext<SelectionStore | null>(null);
 /**
  * Mount one per scene, keyed on the building id: a different site is a
  * different set of props, so the old selection dies with the old store.
+ *
+ * An ancestor provider wins. The chapter tour and the scene are two cells of
+ * the same grid row and have to share one selection, so `page.tsx` mounts a
+ * provider around both; the scene keeps mounting its own so that it still works
+ * on its own, and inheriting here is what stops the two from disagreeing.
  */
 export function SelectionProvider({ children }: { children: ReactNode }) {
-  const store = useMemo(() => createSelectionStore(), []);
-  return <SelectionContext.Provider value={store}>{children}</SelectionContext.Provider>;
+  const inherited = useContext(SelectionContext);
+  const own = useMemo(() => createSelectionStore(), []);
+  return (
+    <SelectionContext.Provider value={inherited ?? own}>{children}</SelectionContext.Provider>
+  );
 }
 
 export function useSelectionStore(): SelectionStore {

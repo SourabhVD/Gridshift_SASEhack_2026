@@ -22,7 +22,6 @@ import { formatHourIndex, formatKw } from '@/lib/format';
 import type { Building, EnergyFlows } from '@/types/api';
 import type { EnergySceneProps } from './contracts';
 import { TOOL_NODES, type SceneNode } from './layout';
-import { DetailCard } from './interaction/DetailCard';
 import { InteractionLayer } from './interaction/InteractionLayer';
 import { SelectionProvider, useSelectionStore } from './interaction/selection';
 import SceneEnvironment from './Environment';
@@ -157,7 +156,8 @@ export function EnergyScene({
  * Split out so that nothing which subscribes to the selection can force a
  * re-render of this tree: `useSelectionStore()` returns the same object for the
  * life of the site, and the components that actually watch the selection (the
- * camera rig, the pickables, the card, the HUD hint) are leaves.
+ * camera rig, the pickables, the HUD hint) are leaves. The readout that used to
+ * float over the canvas is now the open chapter in the tour beside it.
  */
 interface SceneBodyProps {
   building: Building;
@@ -287,7 +287,6 @@ function SceneBody({
       />
 
       <InteractionLayer containerRef={containerRef} type={building.type} />
-      <DetailCard />
     </div>
   );
 }

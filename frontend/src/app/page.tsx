@@ -15,6 +15,10 @@
  * keep a fill. Columns and spans are unchanged -- flattening removed the
  * borders that were competing with the rhythm, not the rhythm.
  *
+ * Row 3 is the tour: a column of chapter pills on the left third and the scene
+ * on the right two thirds, sharing one selection store mounted here. The agent
+ * log moved down to sit beside the action plan, which is the list it produced.
+ *
  * Load motion: five groups rise 10px over 330ms on a 60ms cascade, and only on
  * the first paint of the session. `main` is keyed on the building, so without
  * the latch below every site switch would replay the entrance -- which the
@@ -43,7 +47,9 @@ import { EnergyFlowPanel } from '@/components/EnergyFlowPanel';
 import { ImpactChart } from '@/components/ImpactChart';
 import { KpiRow } from '@/components/KpiRow';
 import { PeakAlert } from '@/components/PeakAlert';
+import { SelectionProvider } from '@/components/scene/interaction/selection';
 import { TimelinePanel } from '@/components/TimelinePanel';
+import { ChapterTour } from '@/components/tour/ChapterTour';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { useGridShift } from '@/lib/store';
@@ -135,16 +141,21 @@ export default function Page() {
             </div>
           )}
 
-          {/* Row 3 -- flow diagram 2/3 (hero), agent log 1/3 beside it so tool
-              calls and node pulses read together */}
-          <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-2', riseClass)}
-              style={riseStyle(3)}>
-            <EnergyFlowPanel />
-          </div>
-          <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-1', riseClass)}
-              style={riseStyle(3)}>
-            <AgentActivity />
-          </div>
+          {/* Row 3 -- the tour. A column of chapter pills 1/3, the scene 2/3.
+              Both cells read and write ONE selection store, mounted here rather
+              than inside the scene, which is what makes opening a chapter and
+              clicking a device the same event. Keyed on the building for the
+              same reason `main` is: a new site is a new set of props. */}
+          <SelectionProvider key={buildingId}>
+            <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-1', riseClass)}
+                style={riseStyle(3)}>
+              <ChapterTour />
+            </div>
+            <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-2', riseClass)}
+                style={riseStyle(3)}>
+              <EnergyFlowPanel />
+            </div>
+          </SelectionProvider>
 
           {/* Row 4 -- time scrubber full width; drives the diagram above and
               the chart below */}
@@ -163,10 +174,16 @@ export default function Page() {
             <ImpactChart />
           </div>
 
-          {/* Row 6 -- full width */}
-          <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-3', riseClass)}
+          {/* Row 6 -- action plan 2/3, agent log 1/3 beside it: the log is the
+              working that produced the list, so they belong on one row. The log
+              is deliberately NOT [data-quiet] -- it is what the run is about. */}
+          <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-2', riseClass)}
               style={riseStyle(4)} data-quiet>
             <ActionPlan />
+          </div>
+          <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-1', riseClass)}
+              style={riseStyle(4)}>
+            <AgentActivity />
           </div>
         </div>
       </main>

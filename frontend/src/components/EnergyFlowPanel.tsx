@@ -39,8 +39,13 @@ import { useGridShift } from '@/lib/store';
  * Tall enough for the site to have air around it in a two-thirds column, and on
  * a phone -- where the cell is a portrait box barely wider than it is tall --
  * still the same 520 px rather than a letterbox.
+ *
+ * Fixed on desktop rather than `h-full`: the chapter column beside it grows
+ * when a chapter opens, and a scene that grew with it would re-fit its camera
+ * mid-animation. The scene is the one thing in this row that must not move.
  */
-const PANEL_BOX = 'relative isolate min-h-[520px] w-full overflow-hidden bg-base lg:h-full';
+const PANEL_BOX =
+  'relative isolate min-h-[520px] w-full overflow-hidden bg-base lg:h-[520px]';
 
 /** The scene pulls in three.js; it must never run on the server. */
 const EnergyScene = dynamic(() => import('@/components/scene/EnergyScene'), {
@@ -103,8 +108,8 @@ export function EnergyFlowPanel() {
   }, [forecast, summary]);
 
   return (
-    /* `isolate`: the detail card and drei's in-world labels stack against each
-       other inside this cell, not against the panels around it. */
+    /* `isolate`: the HUD and drei's in-world labels stack against each other
+       inside this cell, not against the panels around it. */
     <section aria-label="Site energy flow" className={PANEL_BOX}>
       {effectiveView === '3d' ? (
         <EnergyScene fill {...viewProps} />
@@ -155,7 +160,8 @@ export function EnergyFlowPanel() {
 /**
  * The two settings that do not earn permanent chrome: which view, and how
  * expensive it is allowed to be. Closes on outside click and on Escape, which
- * is bound only while it is open so the detail card keeps Escape otherwise.
+ * is bound only while it is open -- and on `document`, which fires before the
+ * chapter tour's window listener, so an open menu keeps the key to itself.
  */
 function SceneMenu({ view, webglSupported }: { view: FlowView; webglSupported: boolean }) {
   const [open, setOpen] = useState(false);
@@ -189,7 +195,7 @@ function SceneMenu({ view, webglSupported }: { view: FlowView; webglSupported: b
   }, [open, close]);
 
   return (
-    /* Above the detail card, which parks itself at z-30. */
+    /* Above drei's in-world kW pills, which it parks at z-index 24. */
     <div ref={rootRef} className="absolute right-4 bottom-4 z-40 sm:right-5">
       {open && (
         <div
@@ -200,8 +206,11 @@ function SceneMenu({ view, webglSupported }: { view: FlowView; webglSupported: b
             'bg-black/90 shadow-2xl backdrop-blur-md',
           )}
         >
+          {/* "Render", not "View": the time scrubber below already owns the
+              word View, and two different meanings of it in one column is a
+              collision a menu label cannot survive. */}
           <MenuRow
-            label="View"
+            label="Render"
             options={FLOW_VIEWS}
             value={view}
             onPick={setFlowView}
