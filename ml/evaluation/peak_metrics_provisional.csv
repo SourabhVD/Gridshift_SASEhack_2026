@@ -1,0 +1,6 @@
+,threshold_kW,n_true_peaks,precision,recall,f1
+LightGBM,360.075,162.0,0.9102,0.9383,0.924
+HistGradientBoosting,360.075,162.0,0.8941,0.9383,0.9157
+GradientBoosting,360.075,162.0,0.9346,0.8827,0.9079
+RandomForest,360.075,162.0,0.9459,0.8642,0.9032
+Naive-24h,360.075,162.0,0.7188,0.7099,0.7143
