@@ -43,10 +43,12 @@ Restart the dev server — these are `NEXT_PUBLIC_*` vars and are inlined at bui
 time. Nothing else changes: `src/lib/api.ts` swaps the mock server for `fetch`
 behind the same function signatures.
 
-| Variable                   | Default                 | Meaning                                                      |
-| -------------------------- | ----------------------- | ------------------------------------------------------------ |
-| `NEXT_PUBLIC_USE_MOCK`     | `true`                  | Anything but `'false'` serves the in-memory fixtures.         |
+| Variable                   | Default                 | Meaning                                                       |
+| -------------------------- | ----------------------- | ------------------------------------------------------------- |
+| `NEXT_PUBLIC_USE_MOCK`     | `true`                  | `true` all mock · `false` all backend · `partial` mock per missing endpoint. |
 | `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | Origin of the FastAPI backend. No trailing slash.             |
+
+Unrecognized values fall back to `true` with a console warning.
 
 The backend must send CORS headers allowing `http://localhost:3000`, serve
 `GET /api/buildings`, and accept `building_id` on every building-scoped
@@ -57,6 +59,95 @@ One value is not an env var: `DEFAULT_BUILDING_ID` in `src/lib/store.tsx`
 (`sea-office-001`), the site the app opens on before anything is stored in
 `localStorage`. It is duplicated there rather than imported from the fixtures so
 that a real-backend build does not pull the mock data into the bundle.
+
+---
+
+## Integrating a real backend
+
+`NEXT_PUBLIC_USE_MOCK=false` is all-or-nothing: the first endpoint FastAPI has
+not written yet takes the whole dashboard down. `partial` is the mode for the
+middle of an integration — every endpoint that exists is used, every endpoint
+that does not is served from `src/mocks/` for that call.
+
+```
+NEXT_PUBLIC_USE_MOCK=partial
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+```
+
+1. Set `partial` in `.env.local` and restart `npm run dev` (these are
+   `NEXT_PUBLIC_*` vars, inlined at build time).
+2. Start the backend and load the page.
+3. Watch the browser console. Each endpoint that is not there yet logs **once**
+   per page load — never once per poll:
+
+   ```
+   [api] /api/forecast not available, using mock
+   ```
+
+   Anything that does not log is live. `endpointStatus` in
+   `src/lib/apiMode.ts` holds the same information as data
+   (`'live' | 'fallback' | 'unknown'` per endpoint, with
+   `subscribe`/`getSnapshot` for `useSyncExternalStore`) for a future header
+   badge.
+4. When the console is quiet, flip to `NEXT_PUBLIC_USE_MOCK=false` — nothing
+   else changes, and from then on every failure is visible.
+
+### What falls back, and what does not
+
+| The backend returns                          | `partial` does            |
+| -------------------------------------------- | ------------------------- |
+| fetch throws (down, CORS, DNS)                | mock                      |
+| no answer within 8 s (4 s on poll calls)      | mock                      |
+| `404`, `501`, `502`, `503`, `504`             | mock                      |
+| `2xx` missing a required top-level field      | mock                      |
+| `400`, `401`, `403`, `409`, `422`, `500`      | throws `ApiError`         |
+| `2xx` with the documented payload             | uses it (endpoint = live) |
+
+Only plainly-missing endpoints fall back. A backend that is *there* and wrong
+must stay visible, or the integration quietly stops making progress.
+
+The shape check is one level deep — the fields the UI dereferences without
+asking, per endpoint in the table below:
+
+| Endpoint                          | Required top-level fields                        |
+| --------------------------------- | ------------------------------------------------ |
+| `GET /api/buildings`              | `buildings[]`                                    |
+| `GET /api/dashboard/summary`      | `building_id`, `current_load_kw`, `peak_threshold_kw` |
+| `GET /api/forecast`               | `points[]`                                       |
+| `POST /api/gridshift/run`         | `run_id`                                         |
+| `GET /api/gridshift/{id}/events`  | `events[]`, `is_complete`                        |
+| `GET /api/gridshift/{id}/plan`    | `actions[]`, `impact[]`                          |
+| `POST /api/actions/{id}/approve`  | `action`, `plan`                                 |
+| `POST /api/actions/{id}/reject`   | `action`, `plan`                                 |
+| `POST /api/demo/reset`            | `ok`                                             |
+
+### One run stays on one side
+
+Mixing is the point for `summary` and `forecast` — one building can read its
+summary from FastAPI and its forecast from the fixtures. A **run** cannot be
+mixed, because a run id only means something to whoever issued it:
+
+- If `POST /api/gridshift/run` falls back, the run id comes back prefixed
+  `mock-` and its `events`, `plan`, `approve` and `reject` all go to the mock.
+  (The prefix is applied in `src/lib/api.ts`; `src/mocks/mockServer.ts` does not
+  know partial mode exists.)
+- If the run started on the backend, every call for it stays on the backend and
+  **never** falls back — the mock has never heard of that run id. So a backend
+  that serves `/run` but not `/events` surfaces an error rather than silently
+  splicing in a fixture run. Implement the run endpoints as a group.
+- On a backend run, a `404` from `/plan` keeps its contract meaning, "the plan
+  is not ready yet" — which is another reason that call does not fall back.
+
+`reset` in `partial` mode resets both sides: the backend if it is live, and the
+mock always, so an endpoint still on fixtures is not left holding a finished run.
+
+Timeouts are client-side (`AbortController`): 8 s normally, 4 s for the calls in
+the 1-second poll loop. In `partial` a timeout degrades to the mock; in `real`
+it surfaces as an `ApiError` with `status === 0`, same as an unreachable host.
+
+The MOCK badge in the header is driven by `IS_MOCK` from `src/lib/api.ts`, which
+is `apiMode !== 'real'` — so it stays lit in `partial` mode, where fixtures can
+still reach the screen.
 
 ---
 
@@ -80,6 +171,7 @@ src/
 │       └── Badge.tsx       Status pill (neutral | good | warn | alert | info)
 ├── lib/
 │   ├── api.ts              The only module that talks to the backend
+│   ├── apiMode.ts          mock | real | partial + per-endpoint live/fallback
 │   ├── store.tsx           GridShiftProvider + useGridShift() — shared state
 │   ├── format.ts           Display formatters (kW, USD, hours, temps, flows)
 │   └── errors.ts           ApiError
