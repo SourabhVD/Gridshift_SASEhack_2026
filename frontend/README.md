@@ -52,8 +52,12 @@ Unrecognized values fall back to `true` with a console warning.
 
 The backend must send CORS headers allowing `http://localhost:3000`, serve
 `GET /api/buildings`, and accept `building_id` on every building-scoped
-endpoint (see the table below). The exact payloads it has to return are in
-[`../docs/API_CONTRACT.md`](../docs/API_CONTRACT.md).
+endpoint (see the table below). The exact payloads it has to return are
+defined by the TypeScript types in [`src/types/api.ts`](src/types/api.ts);
+the in-memory mock in [`src/mocks/mockServer.ts`](src/mocks/mockServer.ts)
+is an executable example of every response, and the runnable FastAPI
+reference in [`../backend/reference`](../backend/reference) implements the
+same contract in Python.
 
 One value is not an env var: `DEFAULT_BUILDING_ID` in `src/lib/store.tsx`
 (`sea-office-001`), the site the app opens on before anything is stored in
