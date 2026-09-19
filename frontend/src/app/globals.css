@@ -1,0 +1,49 @@
+@import "tailwindcss";
+
+/* ---------------------------------------------------------------------------
+   GridShift "dark ops" theme.
+   Every color lives here once. Components must use the Tailwind utilities
+   generated from these tokens (bg-surface, text-muted, text-peak, border-line,
+   ...) or the raw CSS variables (var(--color-peak)) when a library such as
+   Recharts needs a literal color string in JS.
+   --------------------------------------------------------------------------- */
+
+@theme {
+  /* Structure */
+  --color-base: #0a0f1a; /* page background            -> bg-base */
+  --color-surface: #111827; /* card background            -> bg-surface */
+  --color-surface-2: #16202f; /* elevated / hovered surface -> bg-surface-2 */
+  --color-line: #1f2937; /* borders, dividers, grid    -> border-line */
+
+  /* Text */
+  --color-ink: #e5e7eb; /* primary text               -> text-ink */
+  --color-muted: #9ca3af; /* secondary text             -> text-muted */
+
+  /* Data accents */
+  --color-forecast: #38bdf8; /* sky    - forecast series   -> text-forecast */
+  --color-peak: #f59e0b; /* amber  - peak / warning    -> text-peak */
+  --color-alert: #ef4444; /* red    - over threshold    -> text-alert */
+  --color-good: #10b981; /* emerald- savings / ok      -> text-good */
+  --color-battery: #a78bfa; /* violet - battery / storage -> text-battery */
+
+  /* Fonts (provided by next/font in layout.tsx) */
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin dark scrollbars so panels (agent log, action list) stay on-theme. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-line) transparent;
+}

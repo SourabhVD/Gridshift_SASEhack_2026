@@ -1,0 +1,364 @@
+'use client';
+
+/**
+ * DemandChart -- 24 hourly intervals of forecast vs metered load, with the
+ * billed demand threshold, the peak window and (once a plan lands) the
+ * optimized curve on the same axis.
+ *
+ * One y-axis on purpose: price is carried by the tooltip rather than a second
+ * scale, because two scales on one plot invent correlations that are not in the
+ * data. Colors come from the theme tokens in globals.css via CSS variables,
+ * which is the only way Recharts can read them from JS.
+ */
+
+import { useMemo } from 'react';
+import {
+  Area,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  ReferenceArea,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+
+import { Badge } from '@/components/ui/Badge';
+import { Card } from '@/components/ui/Card';
+import { formatHour, formatKw, formatPrice } from '@/lib/format';
+import { useGridShift } from '@/lib/store';
+
+const CHART_HEIGHT = 300;
+
+const COLOR = {
+  forecast: 'var(--color-forecast)',
+  actual: 'var(--color-ink)',
+  optimized: 'var(--color-good)',
+  threshold: 'var(--color-peak)',
+  peakBand: 'var(--color-alert)',
+  line: 'var(--color-line)',
+  muted: 'var(--color-muted)',
+} as const;
+
+const MONTHS = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+
+/** "2025-09-18T10:00:00-07:00" -> "Sep 18, 2025". Deterministic, unlike toLocaleDateString. */
+function formatDate(iso: string): string {
+  const d = new Date(iso);
+  return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+interface Row {
+  hour: string;
+  predicted: number;
+  actual: number | null;
+  optimized: number | null;
+  price: number;
+  isPeak: boolean;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Tooltip                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function TipRow({
+  color,
+  label,
+  value,
+}: {
+  color?: string;
+  label: string;
+  value: string;
+}) {
+  return (
+    <>
+      <dt className="flex items-center gap-1.5 text-muted">
+        <span
+          className="h-1.5 w-1.5 shrink-0 rounded-full"
+          style={{ backgroundColor: color ?? 'transparent' }}
+          aria-hidden="true"
+        />
+        {label}
+      </dt>
+      <dd className="text-right font-medium text-ink tabular-nums">{value}</dd>
+    </>
+  );
+}
+
+function ChartTooltip({
+  active,
+  label,
+  rows,
+}: {
+  active?: boolean;
+  label?: string | number;
+  rows: Row[];
+}) {
+  if (!active || label === undefined) return null;
+
+  const row = rows.find((r) => r.hour === String(label));
+  if (!row) return null;
+
+  return (
+    <div className="rounded-md border border-line bg-surface-2 px-3 py-2 text-xs shadow-lg">
+      <div className="mb-1.5 flex items-center gap-2">
+        <span className="font-semibold text-ink tabular-nums">{row.hour}</span>
+        {row.isPeak && (
+          <span className="rounded-sm bg-alert/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-alert uppercase">
+            Peak
+          </span>
+        )}
+      </div>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-5 gap-y-1">
+        <TipRow color={COLOR.forecast} label="Forecast" value={formatKw(row.predicted)} />
+        {row.actual !== null && (
+          <TipRow color={COLOR.actual} label="Actual" value={formatKw(row.actual)} />
+        )}
+        {row.optimized !== null && (
+          <TipRow
+            color={COLOR.optimized}
+            label="Optimized"
+            value={formatKw(row.optimized)}
+          />
+        )}
+        <TipRow label="Price" value={formatPrice(row.price)} />
+      </dl>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Legend                                                                      */
+/* -------------------------------------------------------------------------- */
+
+function Swatch({
+  color,
+  dashed,
+  label,
+}: {
+  color: string;
+  dashed?: boolean;
+  label: string;
+}) {
+  return (
+    <span className="flex items-center gap-1.5 text-[11px] text-muted">
+      <span
+        className="h-0.5 w-4 shrink-0 rounded-full"
+        style={
+          dashed
+            ? {
+                backgroundImage: `repeating-linear-gradient(to right, ${color} 0 4px, transparent 4px 7px)`,
+              }
+            : { backgroundColor: color }
+        }
+        aria-hidden="true"
+      />
+      {label}
+    </span>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* DemandChart                                                                 */
+/* -------------------------------------------------------------------------- */
+
+export function DemandChart() {
+  const { forecast, summary, plan } = useGridShift();
+
+  const rows = useMemo<Row[]>(() => {
+    if (!forecast) return [];
+    const optimizedByTimestamp = new Map<string, number>();
+    for (const point of plan?.impact ?? []) {
+      optimizedByTimestamp.set(point.timestamp, point.optimized_kw);
+    }
+    return forecast.points.map((p) => ({
+      hour: formatHour(p.timestamp),
+      predicted: p.predicted_load_kw,
+      actual: p.actual_load_kw,
+      optimized: optimizedByTimestamp.get(p.timestamp) ?? null,
+      price: p.price_per_kwh,
+      isPeak: p.is_peak,
+    }));
+  }, [forecast, plan]);
+
+  /** Contiguous runs of is_peak hours, as first/last axis labels. */
+  const peakWindows = useMemo(() => {
+    const windows: { x1: string; x2: string }[] = [];
+    let start: string | null = null;
+    let end: string | null = null;
+    for (const row of rows) {
+      if (row.isPeak) {
+        if (start === null) start = row.hour;
+        end = row.hour;
+      } else if (start !== null && end !== null) {
+        windows.push({ x1: start, x2: end });
+        start = null;
+        end = null;
+      }
+    }
+    if (start !== null && end !== null) windows.push({ x1: start, x2: end });
+    return windows;
+  }, [rows]);
+
+  if (!forecast) {
+    return (
+      <Card title="24-hour demand forecast" className="min-h-[380px]">
+        <div className="h-3 w-56 animate-pulse rounded bg-surface-2" />
+        <div
+          className="mt-4 w-full animate-pulse rounded-md bg-surface-2"
+          style={{ height: CHART_HEIGHT }}
+        />
+      </Card>
+    );
+  }
+
+  const threshold = forecast.peak_threshold_kw;
+  const peakHours = rows.filter((r) => r.isPeak).length;
+  const nowHour = formatHour(summary?.timestamp ?? forecast.generated_at);
+  const hasNow = rows.some((r) => r.hour === nowHour);
+  /** Every third hour, so the axis stays legible on a projector. */
+  const ticks = rows.filter((_, i) => i % 3 === 0).map((r) => r.hour);
+
+  return (
+    <Card
+      title="24-hour demand forecast"
+      subtitle={`${forecast.building_name} · generated ${formatDate(forecast.generated_at)}`}
+      right={
+        peakHours > 0 ? (
+          <Badge tone="alert">{`${peakHours}h over threshold`}</Badge>
+        ) : undefined
+      }
+    >
+      <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1">
+        <Swatch color={COLOR.forecast} label="Forecast" />
+        <Swatch color={COLOR.actual} label="Actual" />
+        {plan && <Swatch color={COLOR.optimized} dashed label="Optimized" />}
+        <span className="ml-auto text-[11px] text-muted">kW</span>
+      </div>
+
+      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
+        <ComposedChart data={rows} margin={{ top: 12, right: 8, bottom: 0, left: 0 }}>
+          <CartesianGrid vertical={false} stroke={COLOR.line} />
+
+          <XAxis
+            dataKey="hour"
+            ticks={ticks}
+            tickLine={false}
+            axisLine={{ stroke: COLOR.line }}
+            tick={{ fill: COLOR.muted, fontSize: 11 }}
+            tickMargin={8}
+            interval="preserveStartEnd"
+          />
+          <YAxis
+            domain={[0, 'auto']}
+            width={44}
+            tickLine={false}
+            axisLine={false}
+            tick={{ fill: COLOR.muted, fontSize: 11 }}
+          />
+
+          {peakWindows.map((w) => (
+            <ReferenceArea
+              key={w.x1}
+              x1={w.x1}
+              x2={w.x2}
+              fill={COLOR.peakBand}
+              fillOpacity={0.08}
+              strokeOpacity={0}
+            />
+          ))}
+
+          <Area
+            type="monotone"
+            dataKey="predicted"
+            name="Forecast"
+            stroke={COLOR.forecast}
+            strokeWidth={2}
+            fill={COLOR.forecast}
+            fillOpacity={0.12}
+            dot={false}
+            activeDot={{ r: 3, strokeWidth: 0, fill: COLOR.forecast }}
+            isAnimationActive={false}
+          />
+          <Line
+            type="monotone"
+            dataKey="actual"
+            name="Actual"
+            stroke={COLOR.actual}
+            strokeWidth={2}
+            dot={false}
+            connectNulls={false}
+            activeDot={{ r: 3, strokeWidth: 0, fill: COLOR.actual }}
+            isAnimationActive={false}
+          />
+          {plan && (
+            <Line
+              type="monotone"
+              dataKey="optimized"
+              name="Optimized"
+              stroke={COLOR.optimized}
+              strokeWidth={2}
+              strokeDasharray="4 2"
+              dot={false}
+              connectNulls={false}
+              activeDot={{ r: 3, strokeWidth: 0, fill: COLOR.optimized }}
+              isAnimationActive={false}
+            />
+          )}
+
+          <ReferenceLine
+            y={threshold}
+            stroke={COLOR.threshold}
+            strokeDasharray="5 4"
+            strokeWidth={1}
+            label={{
+              value: `Threshold ${formatKw(threshold)}`,
+              position: 'insideTopRight',
+              fill: COLOR.threshold,
+              fontSize: 11,
+            }}
+          />
+
+          {hasNow && (
+            <ReferenceLine
+              x={nowHour}
+              stroke={COLOR.muted}
+              strokeDasharray="3 3"
+              strokeWidth={1}
+              label={{
+                value: 'Now',
+                position: 'top',
+                fill: COLOR.muted,
+                fontSize: 11,
+              }}
+            />
+          )}
+
+          <Tooltip
+            cursor={{ stroke: COLOR.line, strokeWidth: 1 }}
+            content={(props) => (
+              <ChartTooltip active={props.active} label={props.label} rows={rows} />
+            )}
+          />
+        </ComposedChart>
+      </ResponsiveContainer>
+    </Card>
+  );
+}
+
+export default DemandChart;
