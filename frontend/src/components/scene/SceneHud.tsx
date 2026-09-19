@@ -12,14 +12,20 @@
  * fades in after a second and a half of hovering an unselected scene, telling
  * you the props can be clicked. It never appears on a touch device (there is no
  * hover to reward) and it disappears for good once something has been picked.
- * While a card is open the site name in the bottom-right is suppressed, because
- * the card sits on top of it.
+ *
+ * The legend follows the same rule for the same reason. With the card gone the
+ * scene is the page, and a permanent row of dots in the corner is chrome nobody
+ * asked for; it fades in while the pointer is over the scene -- which is
+ * exactly when somebody is reading the colours -- and never on touch.
+ *
+ * What is NOT here: the hour/mode pill and the site name. EnergyFlowPanel owns
+ * the first (it pairs it with a status line it has the data for) and the
+ * header's building selector already says which site this is.
  */
 
 import { useEffect, useState, type RefObject } from 'react';
 import clsx from 'clsx';
-import { formatHourIndex, formatKw } from '@/lib/format';
-import type { SceneMode } from './contracts';
+import { formatKw } from '@/lib/format';
 import { useSelected } from './interaction/selection';
 
 const LEGEND: readonly { label: string; color: string }[] = [
@@ -34,21 +40,23 @@ const LEGEND: readonly { label: string; color: string }[] = [
 const HINT_DELAY_MS = 1500;
 
 /**
- * The one piece of instruction the scene ever gives.
+ * True while a fine pointer is inside the scene's box, optionally after a delay.
  *
- * Mounted only while nothing is selected, so its whole lifetime is the
- * condition -- no state to reset, and picking something takes it away. It
- * listens on the container rather than on this layer, which is
+ * It listens on the container rather than on the HUD layer, which is
  * pointer-events-none by design, and it checks `:hover` on mount because the
- * pointer is usually already inside by the time it appears.
+ * pointer is usually already inside by the time a consumer appears. A coarse
+ * pointer never reports true: there is no hover to reward, so anything gated on
+ * this simply stays away on touch.
  */
-function InspectHint({ containerRef }: { containerRef: RefObject<HTMLDivElement | null> }) {
-  const [show, setShow] = useState(false);
+function usePointerOver(
+  containerRef: RefObject<HTMLDivElement | null>,
+  delayMs: number,
+): boolean {
+  const [over, setOver] = useState(false);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    /* A coarse pointer has no hover to reward; the hint would simply sit there. */
     if (window.matchMedia('(hover: none)').matches) return;
 
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -58,11 +66,12 @@ function InspectHint({ containerRef }: { containerRef: RefObject<HTMLDivElement 
     };
     const arm = () => {
       clear();
-      timer = setTimeout(() => setShow(true), HINT_DELAY_MS);
+      if (delayMs <= 0) setOver(true);
+      else timer = setTimeout(() => setOver(true), delayMs);
     };
     const onLeave = () => {
       clear();
-      setShow(false);
+      setOver(false);
     };
 
     if (el.matches(':hover')) arm();
@@ -73,12 +82,31 @@ function InspectHint({ containerRef }: { containerRef: RefObject<HTMLDivElement 
       el.removeEventListener('pointerenter', arm);
       el.removeEventListener('pointerleave', onLeave);
     };
-  }, [containerRef]);
+  }, [containerRef, delayMs]);
+
+  return over;
+}
+
+/**
+ * The one piece of instruction the scene ever gives.
+ *
+ * Mounted only while nothing is selected, so its whole lifetime is the
+ * condition -- no state to reset, and picking something takes it away.
+ */
+function InspectHint({
+  containerRef,
+  fill,
+}: {
+  containerRef: RefObject<HTMLDivElement | null>;
+  fill?: boolean;
+}) {
+  const show = usePointerOver(containerRef, HINT_DELAY_MS);
 
   return (
     <div
       className={clsx(
-        'absolute inset-x-0 bottom-3 flex justify-center transition-opacity duration-500',
+        'absolute inset-x-0 flex justify-center transition-opacity duration-500',
+        fill ? 'bottom-4' : 'bottom-3',
         show ? 'opacity-100' : 'opacity-0',
       )}
     >
@@ -90,52 +118,43 @@ function InspectHint({ containerRef }: { containerRef: RefObject<HTMLDivElement 
 }
 
 export interface SceneHudProps {
-  /** 0–23, the hour being viewed. */
-  hour: number;
-  mode: SceneMode;
   /** Net import from the utility this hour. */
   gridKw: number;
   overThreshold: boolean;
-  /** Site name, in the bottom-right corner. */
-  label?: string;
-  /** The scene's own box, for the hover that arms the hint. */
+  /** The scene's own box, for the hover that arms the hint and the legend. */
   containerRef: RefObject<HTMLDivElement | null>;
+  /** Card-free panel: a bigger readout, no scrims, and a legend that hides. */
+  fill?: boolean;
 }
 
-export function SceneHud({
-  hour,
-  mode,
-  gridKw,
-  overThreshold,
-  label,
-  containerRef,
-}: SceneHudProps) {
+export function SceneHud({ gridKw, overThreshold, containerRef, fill }: SceneHudProps) {
   const selected = useSelected();
+  const pointerOver = usePointerOver(containerRef, 0);
 
   return (
     <div className="pointer-events-none absolute inset-0 select-none" aria-hidden="true">
-      {/* Scrims: the sky goes pale at noon and the readouts have to survive it. */}
-      <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/45 to-transparent" />
-      <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/35 to-transparent" />
-
-      {/* top-left: what you are looking at */}
-      <div className="absolute top-3 left-3">
-        <span
-          className={clsx(
-            'inline-flex items-center rounded-full border border-line bg-surface-2/80 px-3 py-1',
-            'text-[11px] tracking-wide text-muted backdrop-blur-sm',
-          )}
-        >
-          {formatHourIndex(hour)} · {mode}
-        </span>
-      </div>
+      {/* Scrims: the sky goes pale at noon and the readouts have to survive it.
+          The card-free panel has neither, because a band of black over the page
+          background is visible as a band -- which is the rectangle the whole
+          edge treatment exists to remove. Nothing is ever drawn behind the
+          corners there anyway, so the readouts sit on `bg-base` and the text
+          shadow is enough. */}
+      {!fill && (
+        <>
+          <div className="absolute inset-x-0 top-0 h-20 bg-gradient-to-b from-black/45 to-transparent" />
+          <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/35 to-transparent" />
+        </>
+      )}
 
       {/* top-right: the number that matters */}
-      <div className="absolute top-3 right-4 text-right">
+      <div
+        className={clsx('absolute text-right', fill ? 'top-4 right-4 sm:right-5' : 'top-3 right-4')}
+      >
         <div className="text-[10px] tracking-[0.08em] text-muted uppercase">Net grid draw</div>
         <div
           className={clsx(
-            'font-mono text-2xl leading-tight',
+            'font-mono leading-tight',
+            fill ? 'text-[22px] sm:text-[28px]' : 'text-2xl',
             overThreshold ? 'text-alert' : 'text-ink',
           )}
           style={{ textShadow: '0 1px 6px rgba(0,0,0,0.6)' }}
@@ -144,8 +163,14 @@ export function SceneHud({
         </div>
       </div>
 
-      {/* bottom-left: what the colours mean */}
-      <div className="absolute bottom-3 left-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+      {/* bottom-left: what the colours mean, while somebody is looking */}
+      <div
+        className={clsx(
+          'absolute flex flex-wrap items-center gap-x-3 gap-y-1 transition-opacity duration-200',
+          fill ? 'bottom-4 left-4 sm:left-5' : 'bottom-3 left-3',
+          fill && !pointerOver ? 'opacity-0' : 'opacity-100',
+        )}
+      >
         {LEGEND.map(({ label, color }) => (
           <span key={label} className="inline-flex items-center gap-1.5 text-[10px] text-muted">
             <span
@@ -158,14 +183,7 @@ export function SceneHud({
       </div>
 
       {/* bottom-centre: click affordance, only while nothing is selected */}
-      {selected === null && <InspectHint containerRef={containerRef} />}
-
-      {/* bottom-right: which site this is. The detail card sits over it. */}
-      {label && selected === null && (
-        <div className="absolute right-4 bottom-3 max-w-[45%] truncate text-[10px] tracking-wide text-muted/80">
-          {label}
-        </div>
-      )}
+      {selected === null && <InspectHint containerRef={containerRef} fill={fill} />}
     </div>
   );
 }

@@ -13,9 +13,10 @@
  * play) with a card open updates it hour by hour. Nothing here writes to the
  * store except the two decisions and the chart's own hour picking.
  *
- * Layout: a 300 px column pinned to the right of the viewport on desktop, and a
- * full-width bottom sheet under 640 px, where a side rail would leave the scene
- * a letterbox.
+ * Layout: a 300 px column inset from the right of the scene on desktop,
+ * starting below the net-kW readout and stopping above the overflow button so
+ * it overlaps neither, and a full-width bottom sheet under 640 px, where a side
+ * rail would leave the scene a letterbox.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -221,7 +222,10 @@ function DetailPanel({ node }: { node: SceneNode }) {
         /* Above the in-world kW pills, which drei parks at z-index 24. */
         'pointer-events-auto absolute z-30 flex flex-col overflow-hidden',
         'rounded-xl border border-white/10 bg-[#0a0f1a]/70 shadow-2xl backdrop-blur-md',
-        'top-3 right-3 bottom-3 w-[300px]',
+        /* Inset from the scene's edges, and clear of the two things that share
+           its right-hand column: the "NET GRID DRAW" block above (which ends
+           around 76 px down) and the scene's overflow button below. */
+        'top-20 right-4 bottom-16 w-[300px] sm:right-5',
         'max-sm:inset-x-0 max-sm:top-auto max-sm:bottom-0 max-sm:max-h-[78%] max-sm:w-full',
         'max-sm:rounded-b-none',
         'transition-[opacity,transform] duration-[220ms] ease-out',

@@ -40,25 +40,46 @@ const NO_NODES: ReadonlySet<SceneNode> = new Set();
 
 /** Same framing as the 2D diagram, so the two views swap without a reflow. */
 const FRAME = 'relative aspect-[16/9] w-full overflow-hidden rounded-lg';
+/**
+ * The card-free panel takes its size from its grid cell, not from an aspect
+ * ratio, and it has no corners to round: there must be no rectangle anywhere.
+ */
+const FILL_FRAME = 'relative h-full min-h-[520px] w-full overflow-hidden';
+
+function frameOf(fill: boolean | undefined): string {
+  return fill ? FILL_FRAME : FRAME;
+}
 
 /**
- * The soft edge that dissolves the viewport into the card it sits in.
+ * The soft edge that dissolves the viewport into whatever it sits on.
  *
  * The Canvas clears to transparent and the scene has no background, so what
- * you see behind the models is `bg-base`. This gradient walks that back to
- * `--color-surface` -- the card's own colour -- over the outer ~12 % of the
- * frame, which removes the hard rectangle and makes the scene read as part of
- * the panel rather than as a picture hung inside it.
+ * you see behind the models is the page. This gradient walks that back to the
+ * surrounding colour over the outer ~12 % of the frame, on all four sides,
+ * which removes the hard rectangle and makes the scene read as part of the page
+ * rather than as a picture hung inside it. Two of them, because the card's
+ * colour and the page's are not the same black: blending a card-free panel to
+ * `--color-surface` would draw exactly the box this is here to remove.
  */
 const EDGE_BLEND =
   'radial-gradient(118% 118% at 50% 46%, transparent 58%, var(--color-surface) 100%)';
+const EDGE_BLEND_PAGE =
+  'radial-gradient(118% 118% at 50% 46%, transparent 54%, var(--color-base) 100%)';
 
-function Skeleton({ className, label }: { className?: string; label: string }) {
+function Skeleton({
+  className,
+  label,
+  fill,
+}: {
+  className?: string;
+  label: string;
+  fill?: boolean;
+}) {
   return (
     <div
       role="status"
       aria-label={label}
-      className={clsx(FRAME, 'animate-pulse bg-surface-2', className)}
+      className={clsx(frameOf(fill), 'animate-pulse', fill ? 'bg-base' : 'bg-surface-2', className)}
     />
   );
 }
@@ -72,6 +93,7 @@ export function EnergyScene({
   activeTool,
   runStatus,
   className,
+  fill,
 }: EnergySceneProps) {
   const webgl = useWebGL();
   const quality = useQuality();
@@ -83,20 +105,21 @@ export function EnergyScene({
   }, [activeTool, runStatus]);
 
   if (!building || !flows) {
-    return <Skeleton className={className} label="Energy scene loading" />;
+    return <Skeleton className={className} fill={fill} label="Energy scene loading" />;
   }
 
   /* 'unknown' is the first paint, before the capability probe has run. */
   if (webgl === 'unknown') {
-    return <Skeleton className={className} label="Energy scene starting" />;
+    return <Skeleton className={className} fill={fill} label="Energy scene starting" />;
   }
 
   if (webgl === 'unsupported') {
     return (
       <div
         className={clsx(
-          FRAME,
-          'flex items-center justify-center border border-line bg-surface-2 px-6 text-center',
+          frameOf(fill),
+          'flex items-center justify-center px-6 text-center',
+          fill ? 'bg-base' : 'border border-line bg-surface-2',
           className,
         )}
       >
@@ -122,6 +145,7 @@ export function EnergyScene({
         runStatus={runStatus}
         quality={quality}
         className={className}
+        fill={fill}
       />
     </SelectionProvider>
   );
@@ -145,6 +169,7 @@ interface SceneBodyProps {
   runStatus: EnergySceneProps['runStatus'];
   quality: 'high' | 'low';
   className?: string;
+  fill?: boolean;
 }
 
 function SceneBody({
@@ -157,6 +182,7 @@ function SceneBody({
   runStatus,
   quality,
   className,
+  fill,
 }: SceneBodyProps) {
   const store = useSelectionStore();
   const containerRef = useRef<HTMLDivElement>(null);
@@ -173,7 +199,7 @@ function SceneBody({
   return (
     <div
       ref={containerRef}
-      className={clsx(FRAME, 'bg-base', className)}
+      className={clsx(frameOf(fill), 'bg-base', className)}
       role="img"
       aria-label={summary}
     >
@@ -247,15 +273,17 @@ function SceneBody({
         <QualityGovernor />
       </Canvas>
 
-      <div aria-hidden className="pointer-events-none absolute inset-0" style={{ background: EDGE_BLEND }} />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0"
+        style={{ background: fill ? EDGE_BLEND_PAGE : EDGE_BLEND }}
+      />
 
       <SceneHud
-        hour={hour}
-        mode={mode}
         gridKw={flows.grid_kw}
         overThreshold={overThreshold}
-        label={building.name}
         containerRef={containerRef}
+        fill={fill}
       />
 
       <InteractionLayer containerRef={containerRef} type={building.type} />
