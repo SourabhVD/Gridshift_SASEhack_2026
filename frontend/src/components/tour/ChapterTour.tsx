@@ -29,9 +29,19 @@
  * While the agent runs, the pill whose device the current tool is about gets a
  * soft ring in that device's channel colour. It does not open anything: a run
  * is the agent's turn, not a hijack of the viewer's.
+ *
+ * ## Two levels
+ *
+ * The column follows the world. At portfolio level it is `<PortfolioTour>` --
+ * the four sites, one line each -- and opening a chapter there flies down into
+ * a site, at which point this column swaps to the seven chapters below. A ghost
+ * "Portfolio" button sits above them as the way back, and Escape does the same
+ * thing once no chapter is open: close the chapter first, leave the site second,
+ * which is the order you arrived in.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronLeft } from 'lucide-react';
 import { useGridShift } from '@/lib/store';
 import { TOOL_NODES, type SceneNode } from '@/components/scene/layout';
 import {
@@ -40,6 +50,7 @@ import {
   useSelectionStore,
 } from '@/components/scene/interaction/selection';
 import { ChapterPill } from './ChapterPill';
+import { PortfolioTour } from './PortfolioTour';
 import {
   CHAPTERS,
   chapterTitle,
@@ -79,6 +90,8 @@ export function ChapterTour() {
     runStatus,
     activeTool,
     events,
+    level,
+    exitToPortfolio,
   } = useGridShift();
 
   const store = useSelectionStore();
@@ -194,18 +207,22 @@ export function ChapterTour() {
     [store],
   );
 
-  /* Escape anywhere on the page closes the chapter and releases the camera --
-     bound only while something is open, so nothing else loses the key. */
+  /**
+   * Escape, anywhere on the page, undoes exactly one step of how you got here:
+   * the open chapter first, then the site. Never both at once, and never
+   * anything at portfolio level, where there is nothing left to leave.
+   */
   useEffect(() => {
-    if (expanded === null) return;
+    if (level !== 'site') return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.stopPropagation();
-      close();
+      if (expanded !== null) close();
+      else exitToPortfolio();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [expanded, close]);
+  }, [level, expanded, close, exitToPortfolio]);
 
   /* --------------------------------------------------------------- keyboard */
 
@@ -244,6 +261,11 @@ export function ChapterTour() {
 
   /* ----------------------------------------------------------------- render */
 
+  /* One level up the column is about the campus, not about this lot. Rendered
+     before the loading guard below, because the portfolio tour has its own and
+     does not need a building to have finished loading. */
+  if (level === 'portfolio') return <PortfolioTour />;
+
   if (!building || !ctx) {
     return (
       <div
@@ -264,6 +286,23 @@ export function ChapterTour() {
       className="flex min-w-0 flex-col justify-center lg:min-h-[520px]"
     >
       <style>{PULSE_CSS}</style>
+
+      {/* The way back up. A ghost button, because leaving a site is the least
+          interesting thing you can do from inside one. */}
+      <button
+        type="button"
+        onClick={exitToPortfolio}
+        className={[
+          'mb-3 -ml-1 inline-flex w-fit items-center gap-1 rounded-full px-2 py-1',
+          'text-[11px] tracking-[0.06em] text-muted uppercase',
+          'transition-colors duration-[var(--dur)] ease-[var(--ease)] hover:text-ink',
+          'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+          'lg:ml-12',
+        ].join(' ')}
+      >
+        <ChevronLeft className="h-3 w-3" aria-hidden="true" />
+        Portfolio
+      </button>
 
       {/* A group rather than a tablist: the panels live inside the items, which
           is an accordion, not tabs. ARIA does not carry `aria-orientation` on a

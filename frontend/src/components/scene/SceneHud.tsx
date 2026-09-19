@@ -26,6 +26,7 @@
 import { useEffect, useState, type RefObject } from 'react';
 import clsx from 'clsx';
 import { formatKw } from '@/lib/format';
+import type { PortfolioReading, ViewLevel } from '@/lib/store';
 import { useSelected } from './interaction/selection';
 
 /**
@@ -102,9 +103,11 @@ function usePointerOver(
 function InspectHint({
   containerRef,
   fill,
+  label,
 }: {
   containerRef: RefObject<HTMLDivElement | null>;
   fill?: boolean;
+  label: string;
 }) {
   const show = usePointerOver(containerRef, HINT_DELAY_MS);
 
@@ -117,25 +120,46 @@ function InspectHint({
       )}
     >
       <span className="rounded-full border border-white/12 bg-black/45 px-2.5 py-1 text-[10px] tracking-wide text-ink-2 backdrop-blur-sm">
-        Click a device to inspect
+        {label}
       </span>
     </div>
   );
 }
 
 export interface SceneHudProps {
-  /** Net import from the utility this hour. */
+  /** Net import from the utility this hour, for the ACTIVE site. */
   gridKw: number;
   overThreshold: boolean;
   /** The scene's own box, for the hover that arms the hint and the legend. */
   containerRef: RefObject<HTMLDivElement | null>;
   /** Card-free panel: a bigger readout, no scrims, and a legend that hides. */
   fill?: boolean;
+  level: ViewLevel;
+  /** The campus summed at this hour. Null at site level. */
+  portfolio: PortfolioReading | null;
+  /** How many sites the campus actually has, for "n of 4". */
+  siteCount: number;
 }
 
-export function SceneHud({ gridKw, overThreshold, containerRef, fill }: SceneHudProps) {
+export function SceneHud({
+  gridKw,
+  overThreshold,
+  containerRef,
+  fill,
+  level,
+  portfolio,
+  siteCount,
+}: SceneHudProps) {
   const selected = useSelected();
   const pointerOver = usePointerOver(containerRef, 0);
+
+  /* One readout, two subjects. At portfolio it is the campus total with the
+     count of sites over their own cap under it; at site level it is the number
+     it has always been. The shape is identical, so flying down swaps the
+     sentence rather than moving the corner. */
+  const campus = level === 'portfolio' && portfolio !== null;
+  const overCount = portfolio?.sites_over_cap.length ?? 0;
+  const alert = campus ? overCount > 0 : overThreshold;
 
   return (
     <div className="pointer-events-none absolute inset-0 select-none" aria-hidden="true">
@@ -156,17 +180,29 @@ export function SceneHud({ gridKw, overThreshold, containerRef, fill }: SceneHud
       <div
         className={clsx('absolute text-right', fill ? 'top-4 right-4 sm:right-5' : 'top-3 right-4')}
       >
-        <div className="text-[10px] tracking-[0.08em] text-muted uppercase">Net grid draw</div>
+        <div className="text-[10px] tracking-[0.08em] text-muted uppercase">
+          {campus ? 'Portfolio draw' : 'Net grid draw'}
+        </div>
         <div
           className={clsx(
             'font-mono leading-tight',
             fill ? 'text-[22px] sm:text-[28px]' : 'text-2xl',
-            overThreshold ? 'text-alert' : 'text-ink',
+            alert ? 'text-alert' : 'text-ink',
           )}
           style={{ textShadow: '0 1px 6px rgba(0,0,0,0.6)' }}
         >
-          {formatKw(gridKw)}
+          {formatKw(campus ? (portfolio?.total_grid_kw ?? 0) : gridKw)}
         </div>
+        {campus && (
+          <div
+            className={clsx(
+              'mt-0.5 text-[11px] tabular-nums',
+              overCount > 0 ? 'text-alert' : 'text-muted',
+            )}
+          >
+            {`${overCount} of ${siteCount} over cap`}
+          </div>
+        )}
       </div>
 
       {/* bottom-left: what the colours mean, while somebody is looking */}
@@ -181,7 +217,7 @@ export function SceneHud({ gridKw, overThreshold, containerRef, fill }: SceneHud
           <span key={label} className="inline-flex items-center gap-1.5 text-[10px] text-muted">
             <span
               className="h-1.5 w-1.5 rounded-full"
-              style={{ backgroundColor: label === 'Grid' && overThreshold ? 'var(--color-alert)' : color }}
+              style={{ backgroundColor: label === 'Grid' && alert ? 'var(--color-alert)' : color }}
             />
             {label}
           </span>
@@ -189,7 +225,13 @@ export function SceneHud({ gridKw, overThreshold, containerRef, fill }: SceneHud
       </div>
 
       {/* bottom-centre: click affordance, only while nothing is selected */}
-      {selected === null && <InspectHint containerRef={containerRef} fill={fill} />}
+      {selected === null && (
+        <InspectHint
+          containerRef={containerRef}
+          fill={fill}
+          label={campus ? 'Click a building to open it' : 'Click a device to inspect'}
+        />
+      )}
     </div>
   );
 }

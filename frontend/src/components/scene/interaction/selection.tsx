@@ -46,6 +46,17 @@ export interface Gesture {
 export interface SelectionStore {
   getSelected: () => SceneNode | null;
   getHovered: () => SceneNode | null;
+  /**
+   * Portfolio level: which SITE the pointer is over, by building id.
+   *
+   * A fourth piece of state rather than a widening of `hovered`, because the
+   * two never coexist -- a device hover only means something inside a lot, a
+   * site hover only means something above the campus -- and keeping them apart
+   * is what lets the chapter column drive either one without a discriminator.
+   */
+  getHoveredSite: () => string | null;
+  hoverSite: (id: string | null) => void;
+  subscribeHoverSite: (listener: () => void) => () => void;
   /** Null clears. Selecting the node that is already selected clears it too. */
   select: (node: SceneNode | null) => void;
   hover: (node: SceneNode | null) => void;
@@ -68,8 +79,10 @@ export interface SelectionStore {
 export function createSelectionStore(): SelectionStore {
   let selected: SceneNode | null = null;
   let hovered: SceneNode | null = null;
+  let hoveredSite: string | null = null;
   const selectedListeners = new Set<() => void>();
   const hoveredListeners = new Set<() => void>();
+  const hoveredSiteListeners = new Set<() => void>();
   const look: LookOffset = { az: 0, el: 0 };
   const gesture: Gesture = { dragging: false, moved: false };
 
@@ -98,6 +111,16 @@ export function createSelectionStore(): SelectionStore {
     subscribeHover(listener) {
       hoveredListeners.add(listener);
       return () => hoveredListeners.delete(listener);
+    },
+    getHoveredSite: () => hoveredSite,
+    hoverSite(id) {
+      if (id === hoveredSite) return;
+      hoveredSite = id;
+      for (const listener of hoveredSiteListeners) listener();
+    },
+    subscribeHoverSite(listener) {
+      hoveredSiteListeners.add(listener);
+      return () => hoveredSiteListeners.delete(listener);
     },
     look,
     setLook(az, el) {
@@ -152,4 +175,10 @@ export function useSelected(): SceneNode | null {
 export function useHovered(): SceneNode | null {
   const store = useSelectionStore();
   return useSyncExternalStore(store.subscribeHover, store.getHovered, NOTHING);
+}
+
+/** The site under the pointer on the campus, by building id. */
+export function useHoveredSite(): string | null {
+  const store = useSelectionStore();
+  return useSyncExternalStore(store.subscribeHoverSite, store.getHoveredSite, NOTHING);
 }

@@ -1,12 +1,22 @@
 'use client';
 
 /**
- * BuildingSelector -- the header control that switches the whole dashboard
- * between the three sites.
+ * BuildingSelector -- the header breadcrumb, and the control that moves the
+ * whole dashboard between the campus and one of its four sites.
  *
- * Everything below the header is keyed on `buildingId` in page.tsx, so all this
- * has to do is call `selectBuilding()`; the store aborts the poll loop, clears
- * the run and reloads summary + forecast on its own.
+ * It reads `Portfolio > {Building name}`, and both halves are live:
+ *
+ *   Portfolio      a button back up to the campus. Ink while you are there,
+ *                  muted-until-hover once you have gone down into a site.
+ *   Building name  the listbox it has always been. Choosing a site calls
+ *                  `enterSite`, which selects it AND flies down to it, so the
+ *                  header and the scene can never disagree about where you
+ *                  are. At portfolio level the name stays -- muted, and with
+ *                  no chevron -- because it still says which site every panel
+ *                  below the world is about.
+ *
+ * The store aborts the poll loop, clears the run and serves the new site out
+ * of the campus cache on its own; nothing here waits on a request.
  *
  * Interaction is a plain listbox: the trigger owns `aria-haspopup="listbox"`,
  * each row is a `role="option"`, focus moves with ArrowUp/ArrowDown and Enter
@@ -39,10 +49,19 @@ const TYPE_ICON: Record<BuildingType, LucideIcon> = {
 
 const TRIGGER = [
   'inline-flex max-w-[18rem] items-center gap-2 rounded-md -mx-1 px-1 py-1',
-  'text-[15px] font-medium text-ink',
-  'transition-colors duration-[var(--dur)] ease-[var(--ease)] hover:text-ink',
+  'text-[15px] font-medium',
+  'transition-colors duration-[var(--dur)] ease-[var(--ease)]',
   'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
 ].join(' ');
+
+/** The crumb separator. Thin, muted, and never a slash. */
+function Caret() {
+  return (
+    <span aria-hidden="true" className="px-1.5 text-[13px] text-muted select-none">
+      &rsaquo;
+    </span>
+  );
+}
 
 /** 150_000 -> "150k sqft", 9_800 -> "9.8k sqft". */
 function formatArea(sqft: number): string {
@@ -56,7 +75,9 @@ function TypeIcon({ type, className }: { type: BuildingType; className?: string 
 }
 
 export function BuildingSelector() {
-  const { buildings, building, buildingId, selectBuilding, isLoading } = useGridShift();
+  const { buildings, building, buildingId, enterSite, level, exitToPortfolio, isLoading } =
+    useGridShift();
+  const atPortfolio = level === 'portfolio';
 
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -98,9 +119,11 @@ export function BuildingSelector() {
     (id: string) => {
       setOpen(false);
       triggerRef.current?.focus();
-      void selectBuilding(id);
+      /* Picking a site from the header is the same act as clicking it in the
+         world: select it AND go there. */
+      void enterSite(id);
     },
-    [selectBuilding],
+    [enterSite],
   );
 
   const onOptionKeyDown = useCallback(
@@ -130,21 +153,52 @@ export function BuildingSelector() {
 
   const name = building?.name ?? 'Loading building...';
 
+  /** The first crumb. A button even at portfolio level -- it is the way home. */
+  const crumb = (
+    <button
+      type="button"
+      onClick={exitToPortfolio}
+      aria-current={atPortfolio ? 'page' : undefined}
+      className={clsx(
+        TRIGGER,
+        'shrink-0',
+        atPortfolio ? 'text-ink' : 'text-muted hover:text-ink',
+      )}
+    >
+      Portfolio
+    </button>
+  );
+
   /* One site (or none loaded yet): there is nothing to choose between. */
   if (buildings.length <= 1) {
     return (
-      <span className="flex min-w-0 items-center gap-2 text-[15px] font-medium text-ink">
-        {building && <TypeIcon type={building.type} className="h-4 w-4 shrink-0" />}
-        <span className="truncate">{name}</span>
-        {isLoading && (
-          <LoaderCircle className="h-3.5 w-3.5 shrink-0 animate-spin text-muted" aria-hidden="true" />
-        )}
+      <span className="flex min-w-0 items-center">
+        {crumb}
+        <Caret />
+        <span
+          className={clsx(
+            'flex min-w-0 items-center gap-2 text-[15px] font-medium',
+            atPortfolio ? 'text-muted' : 'text-ink',
+          )}
+        >
+          {building && <TypeIcon type={building.type} className="h-4 w-4 shrink-0" />}
+          <span className="truncate">{name}</span>
+          {isLoading && (
+            <LoaderCircle
+              className="h-3.5 w-3.5 shrink-0 animate-spin text-muted"
+              aria-hidden="true"
+            />
+          )}
+        </span>
       </span>
     );
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative flex min-w-0 items-center">
+      {crumb}
+      <Caret />
+
       <button
         ref={triggerRef}
         type="button"
@@ -152,7 +206,7 @@ export function BuildingSelector() {
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label="Select building"
-        className={TRIGGER}
+        className={clsx(TRIGGER, atPortfolio ? 'text-muted hover:text-ink' : 'text-ink')}
       >
         <span className="truncate">{name}</span>
         {isLoading && (

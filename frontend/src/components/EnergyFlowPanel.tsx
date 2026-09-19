@@ -27,7 +27,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import clsx from 'clsx';
 import dynamic from 'next/dynamic';
-import { SlidersHorizontal } from 'lucide-react';
+import { ChevronLeft, SlidersHorizontal } from 'lucide-react';
 import EnergyFlowDiagram from '@/components/flow/EnergyFlowDiagram';
 import { useWebGL } from '@/components/scene/useWebGL';
 import { setQuality, useQuality, type SceneQuality } from '@/components/scene/useQuality';
@@ -71,6 +71,8 @@ export function EnergyFlowPanel() {
     viewMode,
     activeTool,
     runStatus,
+    level,
+    exitToPortfolio,
   } = useGridShift();
 
   const view = useFlowView();
@@ -123,8 +125,10 @@ export function EnergyFlowPanel() {
         </div>
       )}
 
-      {/* top-left: the hour you are looking at, and how the day goes */}
-      <div className="pointer-events-none absolute top-4 left-4 sm:left-5">
+      {/* top-left: the hour you are looking at, the way back up, and how the
+          day goes. The back pill is the only interactive thing in this corner,
+          so the column stays pointer-events-none and it opts back in. */}
+      <div className="pointer-events-none absolute top-4 left-4 z-30 sm:left-5">
         {effectiveView === '3d' && (
           <span
             className={clsx(
@@ -136,7 +140,27 @@ export function EnergyFlowPanel() {
             {viewMode === 'optimized' ? 'Optimized' : 'Baseline'}
           </span>
         )}
-        {status && (
+
+        {level === 'site' && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={exitToPortfolio}
+              className={clsx(
+                'pointer-events-auto inline-flex items-center gap-1 rounded-full py-1 pr-3 pl-2',
+                'ring-1 ring-white/12 ring-inset',
+                'bg-black/45 text-[11px] tracking-wide text-ink-2 backdrop-blur-sm',
+                'transition-colors hover:text-ink',
+                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+              )}
+            >
+              <ChevronLeft className="h-3 w-3" aria-hidden="true" />
+              Portfolio
+            </button>
+          </div>
+        )}
+
+        {status && level === 'site' && (
           <p
             className={clsx(
               'max-w-[15rem] text-xs text-muted sm:max-w-none',

@@ -7,22 +7,25 @@
  * separate component in src/components/; each one reads its own slice of
  * useGridShift(). Keep the layout here and the rendering there.
  *
- * The grid is keyed on the building, so switching sites remounts every panel
- * and drops local UI state (expanded action rows, scrolled logs) with it.
+ * The grid is NOT keyed on the building. It used to be, so that switching sites
+ * dropped every panel's local UI state; the campus took that away, because the
+ * 3D world in row 3 is one continuous scene the camera flies through and a
+ * remount would cut the flight. Panels that care clear their own state now.
  *
  * Layout is option C: the hero canvas sits on the page with no container, the
  * controls around it are hairline-separated rows, and only the two chart panels
  * keep a fill. Columns and spans are unchanged -- flattening removed the
  * borders that were competing with the rhythm, not the rhythm.
  *
- * Row 3 is the tour: a column of chapter pills on the left third and the scene
- * on the right two thirds, sharing one selection store mounted here. The agent
- * log moved down to sit beside the action plan, which is the list it produced.
+ * Row 3 is the tour: a column of chapters on the left third and the world on
+ * the right two thirds, sharing one selection store mounted here. Both halves
+ * follow `level` -- four sites and a top-down campus at 'portfolio', one lot's
+ * seven chapters at 'site'. The agent log moved down to sit beside the action
+ * plan, which is the list it produced.
  *
  * Load motion: five groups rise 10px over 330ms on a 60ms cascade, and only on
- * the first paint of the session. `main` is keyed on the building, so without
- * the latch below every site switch would replay the entrance -- which the
- * motion study calls out as reading like a bug.
+ * the first paint of the session. The module-level latch below is what keeps it
+ * to once; replaying it would read as a bug.
  *
  * Two narrative beats are mounted here rather than inside a panel, because both
  * are about the page as a whole:
@@ -62,8 +65,15 @@ let hasPlayedEntrance = false;
 const ENTRANCE_MS = 900;
 
 export default function Page() {
-  const { forecast, buildingId, isMock, isLoading, runStatus, reset } = useGridShift();
-  const hasPeak = forecast?.points.some((pt) => pt.is_peak) ?? false;
+  const { forecast, sites, level, isMock, isLoading, runStatus, reset } = useGridShift();
+
+  /* At portfolio level the alert row is about the campus, so it appears if ANY
+     site crosses its own cap -- not only the one the dashboards below are
+     about. `PeakAlert` returns null on its own if none does. */
+  const hasPeak =
+    level === 'portfolio'
+      ? Object.values(sites).some((site) => site.forecast?.points.some((pt) => pt.is_peak))
+      : (forecast?.points.some((pt) => pt.is_peak) ?? false);
 
   useColdOpen();
 
@@ -118,8 +128,14 @@ export default function Page() {
         </div>
       </header>
 
+      {/* Deliberately NOT keyed on the building any more.
+          The campus is one continuous world and the camera flies between its
+          lots, so remounting the grid on a site switch would tear down the
+          WebGL context in the middle of the one move this layout is for. The
+          local UI state that the key used to drop -- expanded rows, scrolled
+          logs -- is cheap to keep and, on a portfolio, arguably wants keeping.
+          The scene clears its own selection on a site change instead. */}
       <main
-        key={buildingId}
         data-run={runStatus === 'running' ? 'live' : undefined}
         className="mx-auto max-w-[1600px] px-6 pt-8 pb-16 sm:pt-10"
       >
@@ -141,12 +157,12 @@ export default function Page() {
             </div>
           )}
 
-          {/* Row 3 -- the tour. A column of chapter pills 1/3, the scene 2/3.
+          {/* Row 3 -- the tour. A column of chapter pills 1/3, the world 2/3.
               Both cells read and write ONE selection store, mounted here rather
               than inside the scene, which is what makes opening a chapter and
-              clicking a device the same event. Keyed on the building for the
-              same reason `main` is: a new site is a new set of props. */}
-          <SelectionProvider key={buildingId}>
+              clicking a device -- or a whole site -- the same event. It lives
+              for the life of the page now, like the campus it describes. */}
+          <SelectionProvider>
             <div className={clsx('grid min-w-0 grid-cols-1 lg:col-span-1', riseClass)}
                 style={riseStyle(3)}>
               <ChapterTour />

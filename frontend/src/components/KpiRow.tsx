@@ -26,10 +26,19 @@
  * sentence, it does not appear -- so the strip cannot shift under it.
  *
  * Renders skeleton cells until `summary` arrives so the row never collapses.
+ *
+ * ## Two levels
+ *
+ * At portfolio level the same five cells answer about the campus instead of
+ * about one site: the summed load, the summed peak and its hour, how many sites
+ * are over their own cap right now, the average state of charge and the total
+ * generation. Same strip, same rhythm, same count -- flying down to a site
+ * swaps five numbers and never the shape of the row, which is what keeps the
+ * transition from reading as a page change.
  */
 
 import clsx from 'clsx';
-import type { ReactNode } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 import {
   formatHour,
@@ -188,6 +197,7 @@ export function KpiRow() {
     viewHour,
     nowHour,
     flowsAt,
+    level,
   } = useGridShift();
 
   const isApproved = runStatus === 'approved';
@@ -211,6 +221,8 @@ export function KpiRow() {
   /* The day-level peak is the demo's punchline; it always counts. */
   const peakKw = useCountUp(rawPeakKw);
   const optimizedPeakKw = useCountUp(plan?.optimized_peak_kw ?? 0);
+
+  if (level === 'portfolio') return <PortfolioKpis />;
 
   if (!summary) {
     return (
@@ -336,6 +348,142 @@ export function KpiRow() {
 
       {/* Five cells into two or three columns leaves a hole, and the hole
           shows the hairline colour the gaps are painted with. Fill it. */}
+      <div className="bg-base xl:hidden" aria-hidden="true" />
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Portfolio                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * The same five cells, asked about the campus.
+ *
+ * Every figure except the peak follows the scrubber, exactly as the site row
+ * does -- one clock for everything. The peak is a day-level fact about the
+ * summed curve, which is not the same thing as the sum of the four sites'
+ * individual peaks: they do not all peak in the same hour, and the number that
+ * matters to a portfolio is the worst hour of the total.
+ */
+function PortfolioKpis() {
+  const { buildings, viewHour, nowHour, portfolioAt, siteFlowsAt } = useGridShift();
+
+  const now = useMemo(() => portfolioAt(viewHour), [portfolioAt, viewHour]);
+
+  const peak = useMemo(() => {
+    let kw = -Infinity;
+    let hour = 0;
+    for (let h = 0; h < 24; h += 1) {
+      const total = portfolioAt(h).total_grid_kw;
+      if (total > kw) {
+        kw = total;
+        hour = h;
+      }
+    }
+    return { kw: kw === -Infinity ? 0 : kw, hour };
+  }, [portfolioAt]);
+
+  const onSite = useMemo(() => {
+    let soc = 0;
+    let solar = 0;
+    let counted = 0;
+    for (const b of buildings) {
+      const flows = siteFlowsAt(b.id, viewHour);
+      if (!flows) continue;
+      soc += flows.battery_soc_pct;
+      solar += flows.solar_kw;
+      counted += 1;
+    }
+    return { soc: counted > 0 ? soc / counted : 0, solar, counted };
+  }, [buildings, siteFlowsAt, viewHour]);
+
+  const totalKw = useCountUp(now.total_grid_kw, { snapKey: viewHour });
+  const peakKw = useCountUp(peak.kw);
+  const socPct = useCountUp(onSite.soc, { snapKey: viewHour });
+  const solarKw = useCountUp(onSite.solar, { snapKey: viewHour });
+
+  if (buildings.length === 0) {
+    return (
+      <div className={STRIP}>
+        {Array.from({ length: 5 }, (_, i) => (
+          <SkeletonCell key={i} />
+        ))}
+        <div className="bg-base xl:hidden" aria-hidden="true" />
+      </div>
+    );
+  }
+
+  const isScrubbed = viewHour !== nowHour;
+  const overNow = now.sites_over_cap.length;
+  const capTotal = now.per_site.reduce((sum, site) => sum + site.threshold, 0);
+  const headroomPct = capTotal > 0 ? (now.total_grid_kw / capTotal) * 100 : 0;
+  const filledSegments = Math.max(
+    0,
+    Math.min(BATTERY_SEGMENTS, Math.round((socPct / 100) * BATTERY_SEGMENTS)),
+  );
+
+  return (
+    <div className={STRIP}>
+      <Cell
+        label={isScrubbed ? `Portfolio at ${formatHourIndex(viewHour)}` : 'Portfolio load'}
+        value={Math.round(totalKw).toString()}
+        unit="kW"
+        valueClassName={overNow > 0 ? 'text-alert' : 'text-ink'}
+        meter={<LoadBar pct={headroomPct} />}
+        context={
+          <>
+            {isScrubbed && <PreviewDot />}
+            {`across ${buildings.length} sites`}
+          </>
+        }
+      />
+
+      <Cell
+        label="Portfolio peak"
+        value={Math.round(peakKw).toString()}
+        unit="kW"
+        context={`${formatHourIndex(peak.hour)} · summed across the campus`}
+      />
+
+      <Cell
+        label="Sites over cap"
+        value={String(overNow)}
+        unit={`of ${buildings.length}`}
+        valueClassName={overNow > 0 ? 'text-alert' : 'text-good'}
+        context={
+          <>
+            {isScrubbed && <PreviewDot />}
+            {overNow > 0
+              ? now.sites_over_cap
+                  .map((id) => buildings.find((b) => b.id === id)?.name ?? id)
+                  .join(', ')
+              : 'every site under its threshold'}
+          </>
+        }
+      />
+
+      <Cell
+        label="Average battery"
+        value={formatPct(socPct).replace('%', '')}
+        unit="%"
+        valueClassName="text-battery"
+        meter={<BatteryGlyph filled={filledSegments} />}
+        context={`mean state of charge · ${onSite.counted} packs`}
+      />
+
+      <Cell
+        label="Total solar"
+        value={solarKw.toFixed(1)}
+        unit="kW"
+        context={
+          <>
+            {isScrubbed && <PreviewDot />}
+            generated on site right now
+          </>
+        }
+      />
+
       <div className="bg-base xl:hidden" aria-hidden="true" />
     </div>
   );

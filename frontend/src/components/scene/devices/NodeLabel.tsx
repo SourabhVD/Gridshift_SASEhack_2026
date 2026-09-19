@@ -16,6 +16,7 @@
 
 import { Html } from '@react-three/drei';
 import { usePickEmphasis } from '../interaction/Pickable';
+import { useLite } from './lite';
 
 export interface NodeLabelProps {
   position: readonly [number, number, number];
@@ -34,7 +35,10 @@ export function NodeLabel({ position, name, value, valueColor, show = true }: No
    * itself when the pointer is on that device. This is the only thing in the
    * device subtree that re-renders on a hover. */
   const emphasis = usePickEmphasis();
-  if (!show) return null;
+  /* A background lot on the campus says its name with one pill above the
+   * building, not with five pills around it. */
+  const lite = useLite();
+  if (!show || lite) return null;
   return (
     <Html
       position={position as [number, number, number]}

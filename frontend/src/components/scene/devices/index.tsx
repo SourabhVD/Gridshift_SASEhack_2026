@@ -63,13 +63,23 @@
  *            `good` over 800 ms (see Conduit / FlowParticles / Transformer)
  *   pulse    one bright bead runs the grid conduit transformer -> junction,
  *            once (see ApprovePulse)
+ *
+ * ## lite
+ *
+ * One campus, four lots. `lite` is what a lot costs when it is not the one you
+ * are standing in: the props are all still there and still in the right places,
+ * but nothing that only reads from ten metres away is mounted. See ./lite.ts
+ * for the full list; the short version is that lite drops the particle mesh,
+ * the approve pulse, the agent's rings, every pick target and every floating
+ * pill, and holds the conduits at their dormant gauge.
  */
 
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 import { CatmullRomCurve3 } from 'three';
 import { useGridShift } from '@/lib/store';
 import type { DevicesProps } from '../contracts';
-import { RESIDENCE_WALL_BATTERY, anchorsFor } from '../layout';
+import { LiteContext } from './lite';
+import { RESIDENCE_WALL_BATTERY, type SceneNode, anchorsFor } from '../layout';
 import { ApprovePulse } from './ApprovePulse';
 import { BatteryCabinet } from './BatteryCabinet';
 import { C, evPlan, isResidence, maxFlowKw, v3 } from './common';
@@ -89,7 +99,7 @@ import {
 import { RoofHvac } from './RoofHvac';
 import { RoofSolar } from './RoofSolar';
 import { CONDUCTOR_IDLE, Transformer } from './Transformer';
-import { Pickable, ringsFor } from '../interaction/Pickable';
+import { Pickable, type Ring, ringsFor } from '../interaction/Pickable';
 
 /** Conduit gauge. A utility feeder is not the same object as a domestic run. */
 const COMMERCIAL_RADII: [number, number] = [0.08, 0.22];
@@ -98,6 +108,34 @@ const RESIDENCE_RADII: [number, number] = [0.03, 0.08];
 type Channel = 'grid' | 'solar' | 'battery' | 'ev' | 'hvac';
 const CHANNELS: Channel[] = ['grid', 'solar', 'battery', 'ev', 'hvac'];
 
+/**
+ * A device's pick target -- or, on a background lot, no target at all.
+ *
+ * At portfolio level the whole SITE is the thing you click, so a battery
+ * cabinet answering the pointer would select a device on a lot nobody is
+ * standing in. Rendering a plain group also takes the lot back out of the
+ * raycast entirely, which is most of what makes four lots as cheap to hover as
+ * one.
+ */
+function PickTarget({
+  lite,
+  node,
+  ring,
+  children,
+}: {
+  lite: boolean;
+  node: SceneNode;
+  ring: Ring | null;
+  children: ReactNode;
+}) {
+  if (lite) return <group>{children}</group>;
+  return (
+    <Pickable node={node} ring={ring}>
+      {children}
+    </Pickable>
+  );
+}
+
 export function Devices({
   building,
   flows,
@@ -105,6 +143,7 @@ export function Devices({
   overThreshold,
   activeNodes,
   running,
+  lite = false,
 }: DevicesProps) {
   const { runStatus } = useGridShift();
   const approved = runStatus === 'approved';
@@ -238,68 +277,80 @@ export function Devices({
   const rings = useMemo(() => ringsFor(building), [building]);
 
   return (
-    <group name="devices">
-      <Pickable node="grid" ring={rings.grid}>
-        <Transformer
-          type={type}
-          position={anchors.grid}
-          gridKw={flows.grid_kw}
-          overThreshold={overThreshold}
-          conductorColor={conductorColor}
-        />
-      </Pickable>
-      <Pickable node="battery" ring={rings.battery}>
-        <BatteryCabinet
-          type={type}
-          position={anchors.battery}
-          batteryKw={flows.battery_kw}
-          socPct={flows.battery_soc_pct}
-          accent={batteryColor}
-        />
-      </Pickable>
-      <Pickable node="ev" ring={rings.ev}>
-        <EvBays
-          type={type}
-          position={anchors.ev}
-          plan={plan}
-          totalBays={building.ev_bays}
-          evKw={flows.ev_kw}
-          accent={evColor}
-        />
-      </Pickable>
-      <Pickable node="solar" ring={rings.solar}>
-        <RoofSolar building={building} solarKw={flows.solar_kw} />
-      </Pickable>
-      <Pickable node="hvac" ring={rings.hvac}>
-        <RoofHvac building={building} hvacKw={flows.hvac_kw} maxKw={maxKw} />
-      </Pickable>
+    <LiteContext.Provider value={lite}>
+      <group name="devices">
+        <PickTarget lite={lite} node="grid" ring={rings.grid}>
+          <Transformer
+            type={type}
+            position={anchors.grid}
+            gridKw={flows.grid_kw}
+            overThreshold={overThreshold}
+            conductorColor={conductorColor}
+          />
+        </PickTarget>
+        <PickTarget lite={lite} node="battery" ring={rings.battery}>
+          <BatteryCabinet
+            type={type}
+            position={anchors.battery}
+            batteryKw={flows.battery_kw}
+            socPct={flows.battery_soc_pct}
+            accent={batteryColor}
+          />
+        </PickTarget>
+        <PickTarget lite={lite} node="ev" ring={rings.ev}>
+          <EvBays
+            type={type}
+            position={anchors.ev}
+            plan={plan}
+            totalBays={building.ev_bays}
+            evKw={flows.ev_kw}
+            accent={evColor}
+          />
+        </PickTarget>
+        <PickTarget lite={lite} node="solar" ring={rings.solar}>
+          <RoofSolar building={building} solarKw={flows.solar_kw} />
+        </PickTarget>
+        <PickTarget lite={lite} node="hvac" ring={rings.hvac}>
+          <RoofHvac building={building} hvacKw={flows.hvac_kw} maxKw={maxKw} />
+        </PickTarget>
 
-      {CHANNELS.map((channel) => (
-        <Conduit
-          key={channel}
-          curve={curves[channel]}
-          scale={scales[channel]}
-          color={color[channel]}
-        />
-      ))}
-      <FlowParticles streams={streams} />
+        {CHANNELS.map((channel) => (
+          <Conduit
+            key={channel}
+            curve={curves[channel]}
+            /* `dormant` is the gauge, not a claim about the flow: on a
+               background lot it is what drops the run to 0.18 opacity and
+               takes its beads out of the shared mesh. */
+            scale={lite ? { ...scales[channel], dormant: true, count: 0 } : scales[channel]}
+            color={color[channel]}
+          />
+        ))}
 
-      {/* Fires once on the rising edge of `approved`, then parks itself. */}
-      <ApprovePulse
-        curve={curves.grid}
-        active={approved}
-        radius={scales.grid.radius}
-        color={C.good}
-      />
+        {/* Beads, the approve pulse and the agent's rings are all things you
+            read from inside the lot. A background site has none of them. */}
+        {!lite && <FlowParticles streams={streams} />}
 
-      <Highlight
-        building={building}
-        anchors={anchors}
-        plan={plan}
-        activeNodes={activeNodes}
-        running={running}
-      />
-    </group>
+        {!lite && (
+          /* Fires once on the rising edge of `approved`, then parks itself. */
+          <ApprovePulse
+            curve={curves.grid}
+            active={approved}
+            radius={scales.grid.radius}
+            color={C.good}
+          />
+        )}
+
+        {!lite && (
+          <Highlight
+            building={building}
+            anchors={anchors}
+            plan={plan}
+            activeNodes={activeNodes}
+            running={running}
+          />
+        )}
+      </group>
+    </LiteContext.Provider>
   );
 }
 

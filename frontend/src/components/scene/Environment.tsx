@@ -46,7 +46,9 @@ import { useFrame } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import type { BuildingType } from '@/types/api';
-import { BUILDING_SPECS, type GroundAnchor, anchorsFor, ridgeY } from './layout';
+import type { ViewLevel } from '@/lib/store';
+import { BUILDING_SPECS, type GroundAnchor, anchorsFor, evRun, ridgeY } from './layout';
+import { SITE_OFFSETS, campusBounds } from './world';
 
 /* -------------------------------------------------------------------------- */
 /* The day                                                                     */
@@ -168,11 +170,13 @@ export function dayModel(hour: number): DayModel {
 /* The lot                                                                     */
 /* -------------------------------------------------------------------------- */
 
-/** How far the EV bays run out along +x from their anchor, cars included. */
-export function evRun(type: BuildingType): number {
-  /* A house has a driveway, not a charging court. */
-  return type === 'residence' ? 10 : 32;
-}
+/**
+ * How far the EV bays run out along +x from their anchor, cars included.
+ * Lives in `layout` now that `world` needs it too and cannot import this file
+ * without a cycle; re-exported here because half the folder reaches for it
+ * beside `lotOf`.
+ */
+export { evRun };
 
 export interface Lot {
   /** Ground-plane centre of everything that has to be lit and shadowed. */
@@ -218,6 +222,43 @@ export function lotOf(type: BuildingType): Lot {
   };
 }
 
+/**
+ * The shadow frustum for whichever world is on screen.
+ *
+ * At site level it is `lotOf`, translated onto the campus -- same size, same
+ * texel density, just no longer at the origin. At portfolio level it has to
+ * cover all four lots and the substation at once, which is roughly four times
+ * the span and therefore a quarter of the resolution: 4096 over ~260 m is a
+ * 6 cm texel, which is still finer than the penumbra the sun is throwing.
+ *
+ * The one thing it must NOT do is stay lot-sized at portfolio. Three of the
+ * four sites would then be lit but unshadowed, which reads as three buildings
+ * floating over the campus.
+ */
+export function focusLot(
+  level: ViewLevel,
+  type: BuildingType,
+  campusTypes: readonly BuildingType[],
+): Lot {
+  if (level === 'site') {
+    const lot = lotOf(type);
+    const offset = SITE_OFFSETS[type];
+    return {
+      centre: new THREE.Vector3(lot.centre.x + offset[0], 0, lot.centre.z + offset[2]),
+      half: lot.half,
+    };
+  }
+
+  const campus = campusBounds(campusTypes);
+  return {
+    centre: campus.centre.clone(),
+    /* The diagonal, not the larger half-extent: the sun rakes across the
+       campus at an angle, so a square frustum sized to x alone would drop the
+       far corner's shadow. */
+    half: Math.hypot(campus.halfX, campus.halfZ) + 20,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /* Component                                                                   */
 /* -------------------------------------------------------------------------- */
@@ -228,13 +269,27 @@ const LAMBDA = 4.5;
 export interface SceneEnvironmentProps {
   /** 0-23, the hour being viewed. */
   hour: number;
-  /** Sizes the shadow frustum to the site. */
+  /** The active site. Sizes the shadow frustum at site level. */
   type: BuildingType;
+  /** Campus-sized frustum at 'portfolio', lot-sized at 'site'. */
+  level: ViewLevel;
+  /** The site types actually on the campus. */
+  campusTypes: readonly BuildingType[];
 }
 
-export function SceneEnvironment({ hour, type }: SceneEnvironmentProps) {
+export function SceneEnvironment({
+  hour,
+  type,
+  level,
+  campusTypes,
+}: SceneEnvironmentProps) {
   const target = useMemo(() => dayModel(hour), [hour]);
-  const lot = useMemo(() => lotOf(type), [type]);
+  const campusKey = campusTypes.join(',');
+  const lot = useMemo(
+    () => focusLot(level, type, campusTypes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [level, type, campusKey],
+  );
 
   const sunRef = useRef<THREE.DirectionalLight>(null);
   const sunTargetRef = useRef<THREE.Object3D>(null);
@@ -259,7 +314,7 @@ export function SceneEnvironment({ hour, type }: SceneEnvironmentProps) {
     camera.top = lot.half;
     camera.bottom = -lot.half;
     camera.near = 20;
-    camera.far = SUN_DISTANCE + lot.half + 60;
+    camera.far = SUN_DISTANCE + lot.half * 2 + 80;
     camera.updateProjectionMatrix();
     sun.shadow.bias = -0.0002;
     sun.shadow.normalBias = 0.02;

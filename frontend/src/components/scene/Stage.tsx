@@ -27,7 +27,8 @@
 import { useMemo } from 'react';
 import { ContactShadows } from '@react-three/drei';
 import type { BuildingType } from '@/types/api';
-import { lotOf } from './Environment';
+import type { ViewLevel } from '@/lib/store';
+import { focusLot } from './Environment';
 
 /**
  * --color-base, the page background.
@@ -57,20 +58,40 @@ const CONTACT_OPACITY = 0.22;
  */
 const CONTACT_Y = 0.04;
 
+/**
+ * Fog, per level.
+ *
+ * At site level the camera is 60-120 m out and 150 m is where "far away"
+ * starts. At portfolio it is ~450 m up, so the SAME numbers would fog the whole
+ * campus into the background -- the depth cue would eat the subject. The
+ * portfolio band starts past the nearest lot and only ever touches the far
+ * corners, which is all it is there to do.
+ */
+const SITE_FOG: [number, number] = [150, 650];
+const CAMPUS_FOG: [number, number] = [430, 1300];
+
 export interface StageProps {
   /** 0-23, the hour being viewed. Only used to re-bake the contact shadows. */
   hour: number;
   type: BuildingType;
+  level: ViewLevel;
+  campusTypes: readonly BuildingType[];
 }
 
-export function Stage({ hour, type }: StageProps) {
-  const lot = useMemo(() => lotOf(type), [type]);
+export function Stage({ hour, type, level, campusTypes }: StageProps) {
+  const campusKey = campusTypes.join(',');
+  const lot = useMemo(
+    () => focusLot(level, type, campusTypes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [level, type, campusKey],
+  );
+  const fog = level === 'portfolio' ? CAMPUS_FOG : SITE_FOG;
 
   return (
     <>
       {/* No <color attach="background"> on purpose: the scene stays
           transparent and the dashboard shows through. */}
-      <fog attach="fog" args={[PAGE_BASE, 150, 650]} />
+      <fog attach="fog" args={[PAGE_BASE, fog[0], fog[1]]} />
 
       {/* Shadow catcher. Invisible wherever nothing is shadowed, which is most
           of it, so there is no floor colour to reconcile with the page. Tinted
@@ -87,20 +108,26 @@ export function Stage({ hour, type }: StageProps) {
       </mesh>
 
       {/* One bake is enough -- the geometry never moves. Keyed so a building
-          swap or an hour change regenerates it. */}
-      <ContactShadows
-        key={`${type}-${Math.round(hour)}`}
-        position={[lot.centre.x, CONTACT_Y, lot.centre.z]}
-        /* Follows the lot, so a 25 m house lot is not paying for a 120 m map. */
-        scale={lot.half * 2}
-        resolution={1024}
-        blur={2.2}
-        opacity={CONTACT_OPACITY}
-        /* Only the first 12 m above grade occludes. Higher than that and a
-           38 m tower paints a grey slab that no sun direction explains. */
-        far={12}
-        frames={1}
-      />
+          swap or an hour change regenerates it.
+
+          Site level only. A 1024 map stretched over a 260 m campus is a 25 cm
+          texel, which is not a contact shadow -- it is a grey smudge under four
+          buildings. Up there the sun's own cast shadow carries the weight. */}
+      {level === 'site' && (
+        <ContactShadows
+          key={`${type}-${Math.round(hour)}`}
+          position={[lot.centre.x, CONTACT_Y, lot.centre.z]}
+          /* Follows the lot, so a 25 m house lot is not paying for a 120 m map. */
+          scale={lot.half * 2}
+          resolution={1024}
+          blur={2.2}
+          opacity={CONTACT_OPACITY}
+          /* Only the first 12 m above grade occludes. Higher than that and a
+             38 m tower paints a grey slab that no sun direction explains. */
+          far={12}
+          frames={1}
+        />
+      )}
     </>
   );
 }

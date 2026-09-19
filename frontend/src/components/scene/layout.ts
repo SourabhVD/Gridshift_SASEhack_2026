@@ -24,6 +24,11 @@ export const ANCHORS = {
   battery: [-16, 0, -14] as const,  // battery cabinet, back-left
   ev:      [22, 0, 12] as const,    // charging bays, front-right; cars line up along +x from here
 } as const;
+/** How far the EV bays run out along +x from their anchor, cars included. */
+export function evRun(type: BuildingType): number {
+  /* A house has a driveway, not a charging court. */
+  return type === 'residence' ? 10 : 32;
+}
 /** A ground anchor, [x, y, z] in metres. */
 export type GroundAnchor = readonly [number, number, number];
 /**
