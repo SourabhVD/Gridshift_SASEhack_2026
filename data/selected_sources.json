@@ -1,0 +1,56 @@
+{
+  "scenario": "Seattle Northgate medium-office demo; ComStock simulated load",
+  "building": {
+    "name": "GridShift Northgate ComStock 13847 (simulated)",
+    "latitude": 47.6965349,
+    "longitude": -122.326216,
+    "timezone": "America/Los_Angeles",
+    "building_type": "MediumOffice",
+    "utility": "Seattle City Light",
+    "rate_class": "medium",
+    "floor_area_ft2": 46000,
+    "coordinate_basis": "2010 Census tract 53033001900 internal point; NOT a real building address"
+  },
+  "comstock": {
+    "release": "2025/comstock_amy2018_release_3",
+    "building_id": 13847,
+    "upgrade": 0,
+    "native_county": "G5300330",
+    "native_tract": "G5300330001900",
+    "selection_basis": "Native King County medium office, 46000 ft2, electric heating, Seattle Northgate tract; selected before model evaluation",
+    "url": "https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/timeseries_individual_buildings/by_state/upgrade=0/state=WA/13847-0.parquet",
+    "metadata_url": "https://oedi-data-lake.s3.amazonaws.com/nrel-pds-building-stock/end-use-load-profiles-for-us-building-stock/2025/comstock_amy2018_release_3/metadata_and_annual_results/by_state_and_county/basic/parquet/state=WA/county=G5300330/WA_G5300330_upgrade0_basic.parquet",
+    "value_column": "out.electricity.total.energy_consumption",
+    "unit": "kwh",
+    "interval_minutes": 15,
+    "timestamp_position": "end",
+    "source_timezone": "Etc/GMT+5"
+  },
+  "noaa": {
+    "station": "72793524234",
+    "station_name": "BOEING FLD/KING CO INTL AP",
+    "latitude": 47.546,
+    "longitude": -122.315,
+    "start": "2018-01-01",
+    "end": "2019-01-02",
+    "selection_basis": "Nearby airport with all three required weather fields; 24 valid hours on both 2018-01-02 and 2018-07-02. Nearest Sand Point station lacked complete required fields."
+  },
+  "nws": {
+    "hours": 24,
+    "user_agent": "GridShift/0.1 (https://github.com/SourabhVD/Gridshift_SASEHack_2026)",
+    "purpose": "Current weather API integration only; 2018 load is not recent history for a live forecast"
+  },
+  "tariff": {
+    "rate_class": "medium",
+    "location": "C",
+    "effective_from": "2026-01-01",
+    "effective_to": "2026-12-31",
+    "purpose": "Current-year optimization scenario assumption, NOT a verified customer account or 2018 bill reconstruction"
+  },
+  "ml_reference": {
+    "branch": "feature/ml-forecasting",
+    "commit": "d41eb9d294fe84ff8394e2e768384f4458396c28",
+    "url": "https://github.com/SourabhVD/Gridshift_SASEHack_2026/tree/d41eb9d294fe84ff8394e2e768384f4458396c28/ml",
+    "note": "Read for baseline parameters and features; branch was not merged into the active rebase"
+  }
+}
