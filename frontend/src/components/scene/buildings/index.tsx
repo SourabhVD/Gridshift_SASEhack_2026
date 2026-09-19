@@ -13,12 +13,13 @@
 import { useMemo } from 'react';
 import type { BuildingModelProps } from '../contracts';
 import { Pickable, ringsFor } from '../interaction/Pickable';
+import { GENERATED, GeneratedBuilding } from './Generated';
 import { Hospital } from './Hospital';
 import { House } from './House';
 import { OfficeTower } from './OfficeTower';
 import { Warehouse } from './Warehouse';
 
-function Shell(props: BuildingModelProps) {
+function Procedural(props: BuildingModelProps) {
   switch (props.building.type) {
     case 'hospital':
       return <Hospital {...props} />;
@@ -30,6 +31,17 @@ function Shell(props: BuildingModelProps) {
     default:
       return <OfficeTower {...props} />;
   }
+}
+
+/**
+ * The generated shell for this type if there is one, and the procedural
+ * building either way -- in flight, on failure, and for the types whose model
+ * did not survive the quality gate (see `Generated.tsx`).
+ */
+function Shell(props: BuildingModelProps) {
+  const spec = GENERATED[props.building.type];
+  if (!spec) return <Procedural {...props} />;
+  return <GeneratedBuilding {...props} spec={spec} fallback={<Procedural {...props} />} />;
 }
 
 /**

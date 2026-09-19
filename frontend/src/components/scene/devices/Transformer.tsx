@@ -4,9 +4,12 @@
  * Grid intake. Two completely different pieces of kit share this file, because
  * they are the same *node*: the thing the utility owns, at the edge of the lot.
  *
- * Commercial -- a pad-mount transformer (2.2 x 1.6 x 1.8 m, utility green-grey)
- * on a cast pad, louvred down both flanks, with a warning placard on the door,
- * and a 16 m lattice pylon carrying two sagging conductors off toward -x.
+ * Commercial -- a pad-mount transformer (2.2 m across, utility green-grey) on a
+ * cast pad, louvred down both flanks, with a warning placard on the door, and a
+ * 16 m lattice pylon carrying two sagging conductors off toward -x. The cabinet
+ * is a generated model where `/models/transformer.glb` loads and the bevelled
+ * procedural tank where it does not; everything else on the lot is the same
+ * either way, the pad included.
  *
  * Residence -- a pylon on a suburban lawn is absurd, so the lot gets a 9 m
  * timber pole with a pot-mounted can transformer and a wall meter box beside
@@ -14,8 +17,9 @@
  * starts at this pole's insulator, so the span you see is the live run with its
  * beads of light, drawn once rather than twice.
  *
- * Draw calls -- commercial 6: concrete, the bevelled tank, painted-steel trim,
- * the whole lattice as one InstancedMesh, ceramics, conductors. Residence 3.
+ * Draw calls -- commercial 5 with the model (concrete, the cabinet, ceramics,
+ * the whole lattice as one InstancedMesh, conductors), 6 on the procedural
+ * branch, which splits the cabinet into tank and trim. Residence 3.
  */
 
 import { useLayoutEffect, useMemo, useRef, type ComponentRef } from 'react';
@@ -25,6 +29,8 @@ import { CatmullRomCurve3, Color, Vector3 } from 'three';
 import type { BuildingType } from '@/types/api';
 import { formatKw } from '@/lib/format';
 import { settle, usePrefersReducedMotion } from './ApprovePulse';
+import { GlbOrFallback } from '../glb/GlbOrFallback';
+import { preloadGlb, useBakedGlb, type GlbTransform } from '../glb/useBakedGlb';
 import { C, MAT, isResidence } from './common';
 import { Boxes, Cylinders, RoundedBoxes, type Piece } from './Instanced';
 import { NodeLabel } from './NodeLabel';
@@ -82,10 +88,11 @@ function buildTank(): Piece[] {
 }
 
 /**
- * Painted-steel trim: the louvre banks, the door seams, the placard, and the
- * whole pylon lattice. One material, one draw call, ~110 pieces.
+ * Painted-steel trim on the tank: the louvre banks, the door seams and the
+ * placard. Split from the lattice because the generated cabinet carries its own
+ * louvres and door -- when that model is in, this list is simply not drawn.
  */
-function buildSteel(): Piece[] {
+function buildTankSteel(): Piece[] {
   const pieces: Piece[] = [];
 
   // --- louvred flanks ----------------------------------------------------
@@ -108,7 +115,13 @@ function buildSteel(): Piece[] {
   pieces.push({ p: [0.58, PAD_H + 1.34, FACE_Z + 0.006], s: [0.3, 0.22, 0.012], c: C.placard });
   pieces.push({ p: [0.58, PAD_H + 1.34, FACE_Z + 0.002], s: [0.34, 0.26, 0.01], c: C.dark });
 
-  // --- lattice: legs, horizontal braces, crossing diagonals --------------
+  return pieces;
+}
+
+/** The pylon lattice: legs, horizontal braces, crossing diagonals, arm. */
+function buildPylonSteel(): Piece[] {
+  const pieces: Piece[] = [];
+
   for (let k = 0; k < PYLON_STAGES; k++) {
     const yMid = (k + 0.5) * STAGE_H;
     const hw = pylonHalf(yMid);
@@ -171,11 +184,14 @@ function buildSteel(): Piece[] {
   return pieces;
 }
 
-/** Ceramics: tank bushings and the suspension bells at the arm tips. */
-function buildCeramics(): Piece[] {
+/**
+ * Ceramics: the two tank bushings, which stand on whichever lid is in front of
+ * them, plus the suspension bells at the arm tips.
+ */
+function buildCeramics(lidY: number): Piece[] {
   const pieces: Piece[] = [];
   for (const dx of [-0.5, 0.5]) {
-    pieces.push({ p: [dx, PAD_H + TANK_H + 0.28, 0], s: [0.22, 0.44, 0.22] });
+    pieces.push({ p: [dx, lidY + 0.28, 0], s: [0.22, 0.44, 0.22] });
   }
   for (const sz of [-1, 1]) {
     pieces.push({ p: [PYLON_X, ARM_Y - 0.3, sz * ARM_HALF], s: [0.2, 0.44, 0.2] });
@@ -232,9 +248,68 @@ function buildConductors(): [number, number, number][] {
  * than memoised per instance. */
 const PAD = buildPad();
 const TANK = buildTank();
-const STEEL = buildSteel();
-const CERAMICS = buildCeramics();
+const TANK_STEEL = buildTankSteel();
+const PYLON_STEEL = buildPylonSteel();
+const CERAMICS = buildCeramics(PAD_H + TANK_H);
 const CONDUCTORS = buildConductors();
+
+/* -------------------------------------------------------------------------- */
+/* The generated cabinet                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A pad-mount transformer out of the model pipeline: green-grey paint, louvred
+ * door, finned radiator bank on the +z face and its own cast plinth, all in
+ * COLOR_0. It stands on the procedural pad rather than replacing it, because
+ * the pad is what the conduit run and the kerb are drawn against.
+ *
+ * Scaled to the brief's 2.2 m across and left at its own proportions from
+ * there, which puts the lid at 1.52 m rather than the procedural 1.8 m -- so
+ * the bushings are rebuilt onto whichever lid is actually underneath them.
+ */
+const CABINET_URL = '/models/transformer.glb';
+const CABINET_FIT: GlbTransform = { width: 2.2, baseY: PAD_H };
+/** The generator's green is dull under a sky HDRI; this is a small lift only. */
+const CABINET_TINT = '#c8d2c6';
+
+function GeneratedCabinet() {
+  const { geometry, size } = useBakedGlb(CABINET_URL, CABINET_FIT);
+  const ceramics = useMemo(() => buildCeramics(PAD_H + size.y), [size.y]);
+  return (
+    <>
+      <mesh geometry={geometry} castShadow receiveShadow>
+        <meshStandardMaterial
+          color={CABINET_TINT}
+          vertexColors
+          roughness={0.55}
+          metalness={0}
+        />
+      </mesh>
+      <Cylinders pieces={ceramics} radialSegments={10}>
+        <meshStandardMaterial color="#d6d3d1" roughness={0.35} metalness={0.05} />
+      </Cylinders>
+    </>
+  );
+}
+
+/** The bevelled tank, its louvres and placard, and the bushings on its lid. */
+function ProceduralCabinet() {
+  return (
+    <>
+      <RoundedBoxes pieces={TANK} radius={0.035}>
+        <meshStandardMaterial color="#ffffff" {...MAT.paintedSteel} />
+      </RoundedBoxes>
+      <Boxes pieces={TANK_STEEL}>
+        <meshStandardMaterial color="#ffffff" {...MAT.paintedSteel} />
+      </Boxes>
+      <Cylinders pieces={CERAMICS} radialSegments={10}>
+        <meshStandardMaterial color="#d6d3d1" roughness={0.35} metalness={0.05} />
+      </Cylinders>
+    </>
+  );
+}
+
+preloadGlb(CABINET_URL);
 
 /* -------------------------------------------------------------------------- */
 /* Residence: timber pole + can transformer + meter                            */
@@ -370,17 +445,13 @@ export function Transformer({
         <meshStandardMaterial color={C.concrete} {...MAT.concrete} />
       </Boxes>
 
-      <RoundedBoxes pieces={TANK} radius={0.035}>
-        <meshStandardMaterial color="#ffffff" {...MAT.paintedSteel} />
-      </RoundedBoxes>
+      <GlbOrFallback src={CABINET_URL} fallback={<ProceduralCabinet />}>
+        <GeneratedCabinet />
+      </GlbOrFallback>
 
-      <Boxes pieces={STEEL}>
+      <Boxes pieces={PYLON_STEEL}>
         <meshStandardMaterial color="#ffffff" {...MAT.paintedSteel} />
       </Boxes>
-
-      <Cylinders pieces={CERAMICS} radialSegments={10}>
-        <meshStandardMaterial color="#d6d3d1" roughness={0.35} metalness={0.05} />
-      </Cylinders>
 
       {/* Never bright enough to bloom; its colour is walked in the frame loop. */}
       <Line

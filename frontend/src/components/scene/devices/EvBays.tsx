@@ -26,6 +26,8 @@ import { useEffect, useMemo } from 'react';
 import { CatmullRomCurve3, TubeGeometry, Vector3 } from 'three';
 import type { BuildingType } from '@/types/api';
 import { formatKw } from '@/lib/format';
+import { GlbOrFallback } from '../glb/GlbOrFallback';
+import { preloadGlb, useBakedGlb, type GlbTransform } from '../glb/useBakedGlb';
 import { C, DORMANT_KW, MAT, type EvPlan, glow, hash01, isResidence } from './common';
 import { Car, CarFleet, chargePort, type CarPlacement } from './Car';
 import { Boxes, Clones, RoundedBoxes, type Piece } from './Instanced';
@@ -38,6 +40,8 @@ const BAY_D = 5.4;
  *  so a lit screen and a live lead are never hidden behind the car. */
 const PEDESTAL_Z = BAY_D / 2 + 0.3;
 const PEDESTAL_H = 1.4;
+/** Top of the cast footing: where either pedestal, procedural or model, starts. */
+const PEDESTAL_BASE = 0.1;
 const CAR_Z = -0.3;
 
 /* -------------------------------------------------------------------------- */
@@ -88,8 +92,10 @@ function buildLeadGeometry(): TubeGeometry {
 interface Court {
   /** Asphalt apron, bay markings and the pedestal footings. */
   ground: Piece[];
-  /** Powder-coated pedestal shells. */
+  /** Powder-coated pedestal shells, as rounded boxes. */
   pedestals: Piece[];
+  /** The same pedestals as model instances: base on the footing, unit scale. */
+  shells: Piece[];
   /** Unlit quads: the pedestal screens. */
   lit: Piece[];
   /** One per live bay; the lead geometry is instanced onto these. */
@@ -101,6 +107,7 @@ interface Court {
 function buildCourt(bays: number, activeBays: number, evKw: number, accent: string): Court {
   const ground: Piece[] = [];
   const pedestals: Piece[] = [];
+  const shells: Piece[] = [];
   const lit: Piece[] = [];
   const leads: Piece[] = [];
   const cars: CarPlacement[] = [];
@@ -121,10 +128,12 @@ function buildCourt(bays: number, activeBays: number, evKw: number, accent: stri
 
     ground.push({ p: [x, 0.05, PEDESTAL_Z], s: [0.62, 0.1, 0.56], c: C.concrete });
     pedestals.push({
-      p: [x, 0.1 + PEDESTAL_H / 2, PEDESTAL_Z],
+      p: [x, PEDESTAL_BASE + PEDESTAL_H / 2, PEDESTAL_Z],
       s: [0.4, PEDESTAL_H, 0.34],
       c: C.powder,
     });
+    // The model is baked to metres already, so an instance only carries a place.
+    shells.push({ p: [x, PEDESTAL_BASE, PEDESTAL_Z], s: [1, 1, 1] });
     // Screen: dark plastic when idle, teal and above the bloom cut when live.
     lit.push({
       p: [x, 1.12, PEDESTAL_Z + 0.18],
@@ -136,8 +145,38 @@ function buildCourt(bays: number, activeBays: number, evKw: number, accent: stri
     if (occupied) cars.push({ at: [x, 0, CAR_Z], paint: i, active });
   }
 
-  return { ground, pedestals, lit, leads, cars };
+  return { ground, pedestals, shells, lit, leads, cars };
 }
+
+/* -------------------------------------------------------------------------- */
+/* The generated pedestal                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * A white DC pedestal out of the model pipeline -- screen bezel, vent slots,
+ * holstered gun and coiled lead, all in COLOR_0 -- scaled to the same 1.4 m the
+ * procedural pedestal stands at and seated on the same cast footing.
+ *
+ * Instanced exactly like the leads are: one `Clones` cluster over the whole
+ * court, so twelve pedestals still cost one draw call. The lit screen quad and
+ * the live lead stay procedural, because they are the two things that have to
+ * change with the flow.
+ */
+const PEDESTAL_URL = '/models/charger.glb';
+const PEDESTAL_FIT: GlbTransform = { height: PEDESTAL_H };
+/** The generator's white is a shade cool; this only nudges it. */
+const PEDESTAL_TINT = '#f0efec';
+
+function GeneratedPedestals({ pieces }: { pieces: Piece[] }) {
+  const { geometry } = useBakedGlb(PEDESTAL_URL, PEDESTAL_FIT);
+  return (
+    <Clones geometry={geometry} pieces={pieces}>
+      <meshStandardMaterial color={PEDESTAL_TINT} vertexColors roughness={0.4} metalness={0} />
+    </Clones>
+  );
+}
+
+preloadGlb(PEDESTAL_URL);
 
 /* -------------------------------------------------------------------------- */
 /* Residence drive                                                             */
@@ -302,9 +341,16 @@ export function EvBays({ type, position, plan, totalBays, evKw, accent }: EvBays
         <meshStandardMaterial color="#ffffff" {...MAT.concrete} />
       </Boxes>
 
-      <RoundedBoxes pieces={court.pedestals} radius={0.045}>
-        <meshStandardMaterial color="#ffffff" {...MAT.powder} />
-      </RoundedBoxes>
+      <GlbOrFallback
+        src={PEDESTAL_URL}
+        fallback={
+          <RoundedBoxes pieces={court.pedestals} radius={0.045}>
+            <meshStandardMaterial color="#ffffff" {...MAT.powder} />
+          </RoundedBoxes>
+        }
+      >
+        <GeneratedPedestals pieces={court.shells} />
+      </GlbOrFallback>
 
       {/* Pedestal screens. Unlit; only the live ones are above the cut. */}
       <Boxes pieces={court.lit} castShadow={false}>
