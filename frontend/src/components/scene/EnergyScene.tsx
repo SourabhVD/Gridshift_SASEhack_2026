@@ -25,7 +25,7 @@ import CameraRig from './CameraRig';
 import SceneHud from './SceneHud';
 /* --- swap these two for the real models when they land --- */
 import { BuildingModel } from '@/components/scene/buildings';
-import { PlaceholderDevices } from './Placeholders';
+import { Devices } from '@/components/scene/devices';
 import { useWebGL } from './useWebGL';
 
 const NO_NODES: ReadonlySet<SceneNode> = new Set();
@@ -120,7 +120,7 @@ export function EnergyScene({
             hour={hour}
             highlighted={activeNodes.has('building')}
           />
-          <PlaceholderDevices
+          <Devices
             building={building}
             flows={flows}
             mode={mode}
