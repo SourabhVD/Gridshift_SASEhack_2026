@@ -49,6 +49,21 @@ const PLANT_HALF_W = 6;
  *  the navy and the whole array reads as terracotta. */
 const GLINT = '#93c5fd';
 
+/* -------------------------------------------------------------------------- */
+/* Residence pick plate                                                        */
+/* -------------------------------------------------------------------------- */
+
+/* The House owns the domestic array, so these mirror its front-slope frame:
+   a 32.6 deg pitch whose centre is (0, 7.408, 2.8), carrying a 14.0 x 5.449 m
+   array. The plate is lifted 0.12 m along the slope normal so it wins the
+   raycast against the panels underneath, which belong to the building. */
+const RESIDENCE_PITCH = Math.atan(3.2 / 5);
+const RESIDENCE_ARRAY_W = 14.0;
+const RESIDENCE_ARRAY_L = 5.449;
+const PLATE_LIFT = 0.12;
+const RESIDENCE_SLOPE_Y = 7.408 + PLATE_LIFT * Math.cos(RESIDENCE_PITCH);
+const RESIDENCE_SLOPE_Z = 2.8 + PLATE_LIFT * Math.sin(RESIDENCE_PITCH);
+
 interface Array_ {
   glass: Piece[];
   /** Frames and rails -- one cluster, matte, no sheen. */
@@ -136,12 +151,26 @@ export function RoofSolar({ building, solarKw }: RoofSolarProps) {
   if (residence || !array) {
     const from = residenceSolarOrigin();
     return (
-      <NodeLabel
-        position={[from[0], from[1] + 1.6, from[2]]}
-        name="Solar"
-        value={formatKw(solarKw)}
-        show={show}
-      />
+      <group>
+        {/* The house's own front slope carries the laminates, so there is no
+            array mesh here to click. This invisible plate lies on that slope
+            (the House's slope group is at y 7.408, z 2.8, pitched 32.6 deg)
+            purely so the array answers the pointer like every other device.
+            It writes no colour and takes no light. */}
+        <mesh
+          position={[0, RESIDENCE_SLOPE_Y, RESIDENCE_SLOPE_Z]}
+          rotation={[-RESIDENCE_PITCH - Math.PI / 2, 0, 0]}
+        >
+          <planeGeometry args={[RESIDENCE_ARRAY_W, RESIDENCE_ARRAY_L]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} colorWrite={false} />
+        </mesh>
+        <NodeLabel
+          position={[from[0], from[1] + 1.6, from[2]]}
+          name="Solar"
+          value={formatKw(solarKw)}
+          show={show}
+        />
+      </group>
     );
   }
 

@@ -13,14 +13,18 @@
  * at module scope, but there is no point shipping a WebGL tree to the server.
  */
 
-import { Suspense, useMemo } from 'react';
+import { Suspense, useMemo, useRef } from 'react';
 import clsx from 'clsx';
 import { Canvas } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
 import * as THREE from 'three';
 import { formatHourIndex, formatKw } from '@/lib/format';
+import type { Building, EnergyFlows } from '@/types/api';
 import type { EnergySceneProps } from './contracts';
 import { TOOL_NODES, type SceneNode } from './layout';
+import { DetailCard } from './interaction/DetailCard';
+import { InteractionLayer } from './interaction/InteractionLayer';
+import { SelectionProvider, useSelectionStore } from './interaction/selection';
 import SceneEnvironment from './Environment';
 import Stage from './Stage';
 import Effects from './Effects';
@@ -104,6 +108,59 @@ export function EnergyScene({
     );
   }
 
+  /* Keyed on the building: a new site is a new set of props, so the store --
+     and with it any selection -- is rebuilt rather than migrated. */
+  return (
+    <SelectionProvider key={building.id}>
+      <SceneBody
+        building={building}
+        flows={flows}
+        hour={hour}
+        mode={mode}
+        overThreshold={overThreshold}
+        activeNodes={activeNodes}
+        runStatus={runStatus}
+        quality={quality}
+        className={className}
+      />
+    </SelectionProvider>
+  );
+}
+
+/**
+ * The scene itself, inside the selection provider.
+ *
+ * Split out so that nothing which subscribes to the selection can force a
+ * re-render of this tree: `useSelectionStore()` returns the same object for the
+ * life of the site, and the components that actually watch the selection (the
+ * camera rig, the pickables, the card, the HUD hint) are leaves.
+ */
+interface SceneBodyProps {
+  building: Building;
+  flows: EnergyFlows;
+  hour: number;
+  mode: EnergySceneProps['mode'];
+  overThreshold: boolean;
+  activeNodes: ReadonlySet<SceneNode>;
+  runStatus: EnergySceneProps['runStatus'];
+  quality: 'high' | 'low';
+  className?: string;
+}
+
+function SceneBody({
+  building,
+  flows,
+  hour,
+  mode,
+  overThreshold,
+  activeNodes,
+  runStatus,
+  quality,
+  className,
+}: SceneBodyProps) {
+  const store = useSelectionStore();
+  const containerRef = useRef<HTMLDivElement>(null);
+
   const loadRatio =
     building.peak_threshold_kw > 0 ? flows.grid_kw / building.peak_threshold_kw : 0;
 
@@ -114,8 +171,20 @@ export function EnergyScene({
     `EV ${formatKw(flows.ev_kw)}, HVAC ${formatKw(flows.hvac_kw)}.`;
 
   return (
-    <div className={clsx(FRAME, 'bg-base', className)} role="img" aria-label={summary}>
+    <div
+      ref={containerRef}
+      className={clsx(FRAME, 'bg-base', className)}
+      role="img"
+      aria-label={summary}
+    >
       <Canvas
+        /* Clicking past every prop is how you get out: same as Escape, same as
+           the card's Back button. A drag that merely ended on nothing is not a
+           click, which is what the gesture flag is for. */
+        onPointerMissed={() => {
+          if (store.hasMoved()) return;
+          store.select(null);
+        }}
         /* The two quality levels need different `gl` flags -- in 'high' the
            composer's SMAA does the antialiasing, so the context's own MSAA is
            dead weight. Keying on quality re-creates the context on a switch,
@@ -150,7 +219,12 @@ export function EnergyScene({
         >
           <SceneEnvironment hour={hour} type={building.type} />
           <Stage hour={hour} type={building.type} />
-          <CameraRig type={building.type} activeNodes={activeNodes} />
+          <CameraRig
+            type={building.type}
+            activeNodes={activeNodes}
+            evBays={building.ev_bays}
+            hvacZones={building.hvac_zones}
+          />
 
           <BuildingModel
             building={building}
@@ -181,7 +255,11 @@ export function EnergyScene({
         gridKw={flows.grid_kw}
         overThreshold={overThreshold}
         label={building.name}
+        containerRef={containerRef}
       />
+
+      <InteractionLayer containerRef={containerRef} type={building.type} />
+      <DetailCard />
     </div>
   );
 }

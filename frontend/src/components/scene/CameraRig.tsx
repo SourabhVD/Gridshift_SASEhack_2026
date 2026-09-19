@@ -18,10 +18,19 @@
  * a few metres toward whatever that tool is about and the camera creeps 10 %
  * closer. It is a lean, not a move — small enough that nothing needs a
  * reduced-motion escape hatch.
+ *
+ * The one concession to the viewer: picking a device hands the rig a composed
+ * close-up from `interaction/shots`, and the four spherical parameters — target,
+ * azimuth, elevation, radius — are damped toward it instead of toward home.
+ * Selection outranks the agent lean, which is suppressed while a shot is held.
+ * On top of that sits the drag offset, damped much faster so a look-around
+ * tracks the hand rather than trailing it; clearing the selection zeroes the
+ * offset, so the camera snaps back to the shot and then eases home. Under
+ * `prefers-reduced-motion` every one of those transitions is a cut.
  */
 
-import { useMemo, useRef } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useMemo, useRef, useSyncExternalStore } from 'react';
+import { useFrame, useThree } from '@react-three/fiber';
 import { PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import type { BuildingType } from '@/types/api';
@@ -35,6 +44,8 @@ import {
   type SceneNode,
 } from './layout';
 import { evRun } from './Environment';
+import { useSelected, useSelectionStore } from './interaction/selection';
+import { shotFor } from './interaction/shots';
 
 const FOV = 28;
 /** Off the front-right corner, so the +z entrance and the +x EV bays both read. */
@@ -59,6 +70,10 @@ const FOCUS_ZOOM = 0.9;
 
 /** Time constant of roughly half a second for the focus lean. */
 const LAMBDA = 2.2;
+/** Home <-> close-up. About 700 ms to settle, which reads as a move, not a cut. */
+const SHOT_LAMBDA = 3.5;
+/** The drag offset rides on top and has to feel attached to the hand. */
+const DRAG_LAMBDA = 14;
 
 const DEG = Math.PI / 180;
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
@@ -100,13 +115,72 @@ function lotBounds(type: BuildingType): Lot {
   };
 }
 
-/** Unit vector from the look-at toward the camera. */
-function viewDirection(out: THREE.Vector3): THREE.Vector3 {
-  const el = ELEVATION_DEG * DEG;
-  const az = AZIMUTH_DEG * DEG;
+/**
+ * Unit vector from the look-at toward the camera, for a bearing measured off
+ * +z toward +x and a height angle above the horizon. Every framing in the
+ * scene — home, agent lean and every close-up — is one of these.
+ */
+function viewDirection(out: THREE.Vector3, azimuthDeg: number, elevationDeg: number) {
+  const el = elevationDeg * DEG;
+  const az = azimuthDeg * DEG;
   return out
     .set(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el))
     .normalize();
+}
+
+/* -------------------------------------------------------------------------- */
+/* Media queries                                                               */
+/* -------------------------------------------------------------------------- */
+
+function mediaStore(query: string) {
+  return {
+    subscribe(onChange: () => void) {
+      const media = window.matchMedia(query);
+      media.addEventListener('change', onChange);
+      return () => media.removeEventListener('change', onChange);
+    },
+    read: () => window.matchMedia(query).matches,
+  };
+}
+
+const MOTION = mediaStore('(prefers-reduced-motion: reduce)');
+/** Matches the card's own breakpoint: below this it is a bottom sheet. */
+const SIDE_CARD = mediaStore('(min-width: 640px)');
+const FALSE = () => false;
+
+/** True when the viewer has asked for no animation; then every move is a cut. */
+function useReducedMotion(): boolean {
+  return useSyncExternalStore(MOTION.subscribe, MOTION.read, FALSE);
+}
+
+/** True when the detail card takes a column out of the right of the frame. */
+function useSideCard(): boolean {
+  return useSyncExternalStore(SIDE_CARD.subscribe, SIDE_CARD.read, FALSE);
+}
+
+/**
+ * How far to slide the frustum sideways so the subject is not behind the card.
+ *
+ * `filmOffset` skews the projection instead of turning the camera, so the
+ * close-up keeps the bearing it was composed at and simply sits left of centre.
+ * The shift is expressed as a fraction of the half-frame and converted into
+ * three's film units: the card plus its margins, as a share of the canvas,
+ * capped so a narrow panel cannot throw the subject off the left edge.
+ */
+const CARD_COLUMN_PX = 300 + 24;
+/**
+ * Only part of the way. The card is glass, not a wall -- the scene reads
+ * through it -- so clearing it completely would throw the subject against the
+ * left edge for no gain. Sixty per cent of the card's share, capped, puts the
+ * subject at about a third of the frame, which is where it wants to be anyway.
+ */
+const SKEW_SHARE = 0.6;
+const MAX_SKEW_FRACTION = 0.3;
+
+function cardSkew(canvasWidth: number, aspect: number): number {
+  if (canvasWidth <= 0) return 0;
+  const fraction = Math.min(MAX_SKEW_FRACTION, (CARD_COLUMN_PX / canvasWidth) * SKEW_SHARE);
+  return fraction * Math.tan((FOV / 2) * DEG) * aspect * 35;
 }
 
 /**
@@ -116,7 +190,7 @@ function viewDirection(out: THREE.Vector3): THREE.Vector3 {
  * the distance; the answer is the largest bound over all eight corners.
  */
 function fitRadius(lot: Lot, aspect: number): number {
-  const dir = viewDirection(new THREE.Vector3());
+  const dir = viewDirection(new THREE.Vector3(), AZIMUTH_DEG, ELEVATION_DEG);
   const forward = dir.clone().negate();
   const right = new THREE.Vector3().crossVectors(forward, WORLD_UP).normalize();
   const up = new THREE.Vector3().crossVectors(right, forward).normalize();
@@ -174,17 +248,37 @@ export interface CameraRigProps {
   type: BuildingType;
   /** Nodes the agent is currently touching. Empty means "rest". */
   activeNodes: ReadonlySet<SceneNode>;
+  /** Bay count and zone count: the close-ups size themselves off the real site. */
+  evBays: number;
+  hvacZones: number;
 }
 
-export function CameraRig({ type, activeNodes }: CameraRigProps) {
+export function CameraRig({ type, activeNodes, evBays, hvacZones }: CameraRigProps) {
   const cameraRef = useRef<THREE.PerspectiveCamera>(null);
+  const store = useSelectionStore();
+  const selected = useSelected();
+  const reduced = useReducedMotion();
+  const sideCard = useSideCard();
+  const canvasWidth = useThree((state) => state.size.width);
 
   const lot = useMemo(() => lotBounds(type), [type]);
+  /* Allocating a Vector3 per frame is the one thing a rig must not do, so the
+     shot is resolved once per selection and then only read. */
+  const shot = useMemo(
+    () => (selected ? shotFor(selected, type, { evBays, hvacZones }) : null),
+    [selected, type, evBays, hvacZones],
+  );
 
   /* Current (damped) state. Snapped on a building switch: a different subject
      is a cut, not a move. */
   const target = useRef(lot.target.clone());
   const radius = useRef(0);
+  const azimuth = useRef(AZIMUTH_DEG);
+  const elevation = useRef(ELEVATION_DEG);
+  /* The drag offset, damped separately and much harder. */
+  const lookAz = useRef(0);
+  const lookEl = useRef(0);
+  const skew = useRef(0);
   const fitted = useRef({ aspect: 0, radius: 0, lot });
 
   /* Scratch, so useFrame allocates nothing. */
@@ -219,8 +313,22 @@ export function CameraRig({ type, activeNodes }: CameraRigProps) {
     /* Rest, plus a small lean toward whatever the agent is querying. */
     const desired = scratch.desired.copy(lot.target);
     let desiredRadius = cache.radius;
+    let desiredAzimuth = AZIMUTH_DEG;
+    let desiredElevation = ELEVATION_DEG;
+    /* The lean is the agent's; the shot is the viewer's, and the viewer wins. */
+    let lambda = LAMBDA;
 
-    if (activeNodes.size > 0) {
+    if (shot) {
+      lambda = SHOT_LAMBDA;
+      desiredAzimuth = shot.azimuthDeg;
+      desiredElevation = shot.elevationDeg;
+      if (shot.homeScale) {
+        desiredRadius = cache.radius * shot.homeScale;
+      } else {
+        desired.copy(shot.target);
+        desiredRadius = shot.distance;
+      }
+    } else if (activeNodes.size > 0) {
       const offset = scratch.offset.set(0, 0, 0);
       for (const node of activeNodes) {
         offset.add(nodePosition(node, type, scratch.node));
@@ -231,11 +339,41 @@ export function CameraRig({ type, activeNodes }: CameraRigProps) {
       desiredRadius *= FOCUS_ZOOM;
     }
 
-    const k = 1 - Math.exp(-LAMBDA * dt);
-    target.current.lerp(desired, k);
-    radius.current = THREE.MathUtils.damp(radius.current, desiredRadius, LAMBDA, dt);
+    if (reduced) {
+      target.current.copy(desired);
+      radius.current = desiredRadius;
+      azimuth.current = desiredAzimuth;
+      elevation.current = desiredElevation;
+      lookAz.current = store.look.az;
+      lookEl.current = store.look.el;
+    } else {
+      const k = 1 - Math.exp(-lambda * dt);
+      target.current.lerp(desired, k);
+      radius.current = THREE.MathUtils.damp(radius.current, desiredRadius, lambda, dt);
+      azimuth.current = THREE.MathUtils.damp(azimuth.current, desiredAzimuth, lambda, dt);
+      elevation.current = THREE.MathUtils.damp(elevation.current, desiredElevation, lambda, dt);
+      lookAz.current = THREE.MathUtils.damp(lookAz.current, store.look.az, DRAG_LAMBDA, dt);
+      lookEl.current = THREE.MathUtils.damp(lookEl.current, store.look.el, DRAG_LAMBDA, dt);
+    }
 
-    const dir = viewDirection(scratch.dir).multiplyScalar(radius.current);
+    /* Slide the frame, not the camera: the subject moves out from under the
+       detail card without the composed bearing changing at all. */
+    const desiredSkew =
+      shot && sideCard ? cardSkew(canvasWidth, camera.aspect || 16 / 9) : 0;
+    const nextSkew = reduced
+      ? desiredSkew
+      : THREE.MathUtils.damp(skew.current, desiredSkew, SHOT_LAMBDA, dt);
+    if (Math.abs(nextSkew - skew.current) > 0.002 || camera.filmOffset !== nextSkew) {
+      skew.current = nextSkew;
+      camera.filmOffset = nextSkew;
+      camera.updateProjectionMatrix();
+    }
+
+    const dir = viewDirection(
+      scratch.dir,
+      azimuth.current + lookAz.current,
+      elevation.current + lookEl.current,
+    ).multiplyScalar(radius.current);
     camera.position.copy(target.current).add(dir);
     camera.lookAt(target.current);
   });

@@ -69,7 +69,9 @@ export function Conduit({ curve, scale, color }: ConduitProps) {
   useEffect(() => () => geometry.dispose(), [geometry]);
 
   return (
-    <mesh geometry={geometry} castShadow receiveShadow>
+    /* Not a pick target: only devices and the building answer the pointer, so
+       the tube is excluded from the raycast outright. */
+    <mesh geometry={geometry} castShadow receiveShadow raycast={() => null}>
       <meshStandardMaterial
         color={color}
         emissive={color}

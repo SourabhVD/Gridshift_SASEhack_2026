@@ -10,13 +10,15 @@
  * Geometry always comes from `BUILDING_SPECS[building.type]`, never from
  * `building.floors`, so the scene stays consistent with the layout contract.
  */
+import { useMemo } from 'react';
 import type { BuildingModelProps } from '../contracts';
+import { Pickable, ringsFor } from '../interaction/Pickable';
 import { Hospital } from './Hospital';
 import { House } from './House';
 import { OfficeTower } from './OfficeTower';
 import { Warehouse } from './Warehouse';
 
-export function BuildingModel(props: BuildingModelProps) {
+function Shell(props: BuildingModelProps) {
   switch (props.building.type) {
     case 'hospital':
       return <Hospital {...props} />;
@@ -28,6 +30,20 @@ export function BuildingModel(props: BuildingModelProps) {
     default:
       return <OfficeTower {...props} />;
   }
+}
+
+/**
+ * The shell, wrapped so that any part of it -- wall, roof, sign, pad -- selects
+ * the site itself. Devices sit in their own pick groups in front of it and stop
+ * propagation, so clicking a battery never reads as clicking the building.
+ */
+export function BuildingModel(props: BuildingModelProps) {
+  const ring = useMemo(() => ringsFor(props.building).building, [props.building]);
+  return (
+    <Pickable node="building" ring={ring}>
+      <Shell {...props} />
+    </Pickable>
+  );
 }
 
 export default BuildingModel;

@@ -15,6 +15,7 @@
  */
 
 import { Html } from '@react-three/drei';
+import { usePickEmphasis } from '../interaction/Pickable';
 
 export interface NodeLabelProps {
   position: readonly [number, number, number];
@@ -29,6 +30,10 @@ export interface NodeLabelProps {
 }
 
 export function NodeLabel({ position, name, value, valueColor, show = true }: NodeLabelProps) {
+  /* Every label is mounted inside its device's <Pickable>, so it can lift
+   * itself when the pointer is on that device. This is the only thing in the
+   * device subtree that re-renders on a hover. */
+  const emphasis = usePickEmphasis();
   if (!show) return null;
   return (
     <Html
@@ -43,7 +48,14 @@ export function NodeLabel({ position, name, value, valueColor, show = true }: No
       wrapperClass="pointer-events-none"
       style={{ pointerEvents: 'none', userSelect: 'none' }}
     >
-      <div className="pointer-events-none whitespace-nowrap rounded-full border border-white/10 bg-black/55 px-2 py-0.5 text-[11px] font-medium tabular-nums text-white/90 backdrop-blur-sm">
+      <div
+        className={
+          'pointer-events-none whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium tabular-nums backdrop-blur-sm transition-colors duration-150 ' +
+          (emphasis === 'none'
+            ? 'border-white/10 bg-black/55 text-white/90'
+            : 'border-white/30 bg-black/70 text-white')
+        }
+      >
         {name}
         {value ? (
           <span className="ml-1.5" style={valueColor ? { color: valueColor } : undefined}>

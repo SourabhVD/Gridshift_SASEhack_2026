@@ -69,6 +69,7 @@ import {
 import { RoofHvac } from './RoofHvac';
 import { RoofSolar } from './RoofSolar';
 import { Transformer } from './Transformer';
+import { Pickable, ringsFor } from '../interaction/Pickable';
 
 /** An optimized plan that has quietened the chargers this far gets the win colour. */
 const EV_QUIET_RATIO = 0.3;
@@ -202,31 +203,47 @@ export function Devices({
     ],
   );
 
+  /* One pick target per device, with the ring that marks it. Wrapping here
+   * rather than inside each prop keeps the props themselves ignorant of the
+   * interaction, and means the conduits and the particle mesh -- which are not
+   * wrapped -- are never even raycast. */
+  const rings = useMemo(() => ringsFor(building), [building]);
+
   return (
     <group name="devices">
-      <Transformer
-        type={type}
-        position={anchors.grid}
-        gridKw={flows.grid_kw}
-        overThreshold={overThreshold}
-      />
-      <BatteryCabinet
-        type={type}
-        position={anchors.battery}
-        batteryKw={flows.battery_kw}
-        socPct={flows.battery_soc_pct}
-        accent={batteryColor}
-      />
-      <EvBays
-        type={type}
-        position={anchors.ev}
-        plan={plan}
-        totalBays={building.ev_bays}
-        evKw={flows.ev_kw}
-        accent={evColor}
-      />
-      <RoofSolar building={building} solarKw={flows.solar_kw} />
-      <RoofHvac building={building} hvacKw={flows.hvac_kw} maxKw={maxKw} />
+      <Pickable node="grid" ring={rings.grid}>
+        <Transformer
+          type={type}
+          position={anchors.grid}
+          gridKw={flows.grid_kw}
+          overThreshold={overThreshold}
+        />
+      </Pickable>
+      <Pickable node="battery" ring={rings.battery}>
+        <BatteryCabinet
+          type={type}
+          position={anchors.battery}
+          batteryKw={flows.battery_kw}
+          socPct={flows.battery_soc_pct}
+          accent={batteryColor}
+        />
+      </Pickable>
+      <Pickable node="ev" ring={rings.ev}>
+        <EvBays
+          type={type}
+          position={anchors.ev}
+          plan={plan}
+          totalBays={building.ev_bays}
+          evKw={flows.ev_kw}
+          accent={evColor}
+        />
+      </Pickable>
+      <Pickable node="solar" ring={rings.solar}>
+        <RoofSolar building={building} solarKw={flows.solar_kw} />
+      </Pickable>
+      <Pickable node="hvac" ring={rings.hvac}>
+        <RoofHvac building={building} hvacKw={flows.hvac_kw} maxKw={maxKw} />
+      </Pickable>
 
       {CHANNELS.map((channel) => (
         <Conduit

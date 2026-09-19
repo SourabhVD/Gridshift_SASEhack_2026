@@ -129,7 +129,13 @@ export function FlowParticles({ streams }: FlowParticlesProps) {
   });
 
   return (
-    <instancedMesh ref={ref} args={[undefined, undefined, capacity]} frustumCulled={false}>
+    <instancedMesh
+      ref={ref}
+      args={[undefined, undefined, capacity]}
+      frustumCulled={false}
+      /* Beads of light are never a pick target. */
+      raycast={() => null}
+    >
       <icosahedronGeometry args={[1, 0]} />
       {/* Unlit, untonemapped and additive: the beads read as light, not as
           painted spheres, and the per-instance colours carry them above the
