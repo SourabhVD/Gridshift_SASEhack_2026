@@ -67,9 +67,37 @@ export interface BuildingShape {
 /**
  * A stylised elevation derived from the building record: offices and hospitals
  * are flat-topped towers whose row count tracks `floors`; warehouses are one
- * wide low bay under a shallow pitched roof.
+ * wide low bay under a shallow pitched roof; the residence is a narrow two-
+ * storey block under a steep gable, so the four sites never read alike.
  */
 export function buildingShape(type: BuildingType, floors: number): BuildingShape {
+  if (type === 'residence') {
+    const x = 340;
+    const y = 190;
+    const w = 120;
+    const h = 82;
+    return {
+      x,
+      y,
+      w,
+      h,
+      top: 134,
+      // Steep gable with a 10-unit eaves overhang either side.
+      roof: '330,190 400,134 470,190',
+      rows: 2,
+      cols: 4,
+      anchors: {
+        left: { x, y: y + h / 2 },
+        // On the roof slope, so the wire lands on the silhouette, not on air.
+        topLeft: { x: 365, y: 162 },
+        topRight: { x: 435, y: 162 },
+        // Near the corners, so the bottom wires clear the centred name label.
+        bottomLeft: { x: x + 8, y: y + h },
+        bottomRight: { x: x + w - 8, y: y + h },
+      },
+    };
+  }
+
   if (type === 'warehouse') {
     const x = 298;
     const y = 196;

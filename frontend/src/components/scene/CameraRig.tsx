@@ -25,7 +25,16 @@ import { useFrame } from '@react-three/fiber';
 import { PerspectiveCamera } from '@react-three/drei';
 import * as THREE from 'three';
 import type { BuildingType } from '@/types/api';
-import { ANCHORS, BUILDING_SPECS, focusHeight, roofY, type SceneNode } from './layout';
+import {
+  BUILDING_SPECS,
+  type GroundAnchor,
+  anchorsFor,
+  focusHeight,
+  ridgeY,
+  roofY,
+  type SceneNode,
+} from './layout';
+import { evRun } from './Environment';
 
 const FOV = 28;
 /** Off the front-right corner, so the +z entrance and the +x EV bays both read. */
@@ -35,8 +44,6 @@ const ELEVATION_DEG = 30;
 /** Breathing room once the exact fit has been solved. */
 const FIT_MARGIN = 1.08;
 
-/** How far the bays run out along +x from their anchor, cars included. */
-const EV_RUN = 28;
 /** Slack around the props, so nothing is framed flush to the edge. */
 const LOT_PADDING = 4;
 /**
@@ -66,15 +73,25 @@ interface Lot {
 /** Everything that has to be in frame: the shell plus every device anchor. */
 function lotBounds(type: BuildingType): Lot {
   const [w, d] = BUILDING_SPECS[type].footprint;
+  const anchors = anchorsFor(type);
+  /* The residence hangs its batteries on a gable wall rather than standing a
+     cabinet in the garden, so it has one ground anchor fewer to frame. */
+  const ground: GroundAnchor[] =
+    anchors.battery === 'wall'
+      ? [anchors.grid, anchors.ev]
+      : [anchors.grid, anchors.battery, anchors.ev];
+  const xs = ground.map((a) => a[0]);
+  const zs = ground.map((a) => a[2]);
 
-  const minX = Math.min(ANCHORS.grid[0], ANCHORS.battery[0], -w / 2) - LOT_PADDING;
-  const maxX = Math.max(ANCHORS.ev[0] + EV_RUN, w / 2) + LOT_PADDING;
-  const minZ = Math.min(ANCHORS.battery[2], -d / 2) - LOT_PADDING;
-  const maxZ = Math.max(ANCHORS.grid[2], ANCHORS.ev[2], d / 2) + LOT_PADDING;
+  const minX = Math.min(-w / 2, ...xs) - LOT_PADDING;
+  const maxX = Math.max(w / 2, anchors.ev[0] + evRun(type), ...xs) + LOT_PADDING;
+  const minZ = Math.min(-d / 2, ...zs) - LOT_PADDING;
+  const maxZ = Math.max(d / 2, ...zs) + LOT_PADDING;
 
   return {
     min: new THREE.Vector3(minX, 0, minZ),
-    max: new THREE.Vector3(maxX, roofY(type) + 3, maxZ),
+    /* `ridgeY`, not `roofY`: a gable would be cropped by its own rise. */
+    max: new THREE.Vector3(maxX, ridgeY(type) + 3, maxZ),
     target: new THREE.Vector3(
       ((minX + maxX) / 2) * LOT_BIAS,
       focusHeight(type),
@@ -130,12 +147,20 @@ function fitRadius(lot: Lot, aspect: number): number {
 /** World point the camera should lean toward, per lit node. */
 function nodePosition(node: SceneNode, type: BuildingType, out: THREE.Vector3): THREE.Vector3 {
   switch (node) {
-    case 'grid':
-      return out.set(ANCHORS.grid[0], 2.5, ANCHORS.grid[2]);
-    case 'battery':
-      return out.set(ANCHORS.battery[0], 2.5, ANCHORS.battery[2]);
-    case 'ev':
-      return out.set(ANCHORS.ev[0] + EV_RUN / 2, 2.5, ANCHORS.ev[2]);
+    case 'grid': {
+      const { grid } = anchorsFor(type);
+      return out.set(grid[0], 2.5, grid[2]);
+    }
+    case 'battery': {
+      const { battery } = anchorsFor(type);
+      /* Wall-mounted units: lean toward the gable they hang on. */
+      if (battery === 'wall') return out.set(-BUILDING_SPECS[type].footprint[0] / 2, 2.5, 0);
+      return out.set(battery[0], 2.5, battery[2]);
+    }
+    case 'ev': {
+      const { ev } = anchorsFor(type);
+      return out.set(ev[0] + evRun(type) / 2, 2.5, ev[2]);
+    }
     case 'solar':
     case 'hvac':
       return out.set(0, roofY(type) + 2, 0);

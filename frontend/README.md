@@ -18,7 +18,7 @@ npm run dev      # http://localhost:3000
 
 No backend is required. `NEXT_PUBLIC_USE_MOCK` defaults to `true`, so the app
 serves fixtures from `src/mocks/` and simulates the agent run in memory
-(~17 seconds, 14 events, then the action plan appears). All three buildings are
+(~17 seconds, 14 events, then the action plan appears). All four buildings are
 served from the mock, each with its own run, plan and 14-event script.
 
 ```bash
@@ -92,6 +92,7 @@ src/
 │       ├── office.ts       sea-office-001    Cascade Commerce Center
 │       ├── hospital.ts     sea-hospital-002  Harborview Medical Annex
 │       ├── warehouse.ts    sea-warehouse-003 Duwamish Logistics Hub
+│       ├── residence.ts    sea-residence-004 Alder Street Residence
 │       └── index.ts        Registry, getFixture(), validateFixtures()
 └── types/
     └── api.ts              Wire types, snake_case, mirror the Pydantic models
@@ -169,9 +170,9 @@ Opacity modifiers work as usual: `bg-good/10`, `border-alert/30`.
 
 ## Buildings and flows
 
-### The three sites
+### The four sites
 
-Three Seattle buildings on the same September weekday, pinned to `2025-09-18`
+Four Seattle buildings on the same September weekday, pinned to `2025-09-18`
 with "now" at `10:00`, on the same tariff ($0.09/kWh off-peak, $0.16/kWh
 14:00–20:00, $8.50/kW monthly demand charge).
 
@@ -180,6 +181,7 @@ with "now" at `10:00`, on the same tariff ($0.09/kWh off-peak, $0.16/kWh
 | `sea-office-001`    | Cascade Commerce Center | office    |    450 kW | 522 kW @ 15:00 |        438 kW |       3 |
 | `sea-hospital-002`  | Harborview Medical Annex| hospital  |    800 kW | 884 kW @ 14:00 |        792 kW |       3 |
 | `sea-warehouse-003` | Duwamish Logistics Hub  | warehouse |    350 kW | 426 kW @ 15:00 |        311 kW |       2 |
+| `sea-residence-004` | Alder Street Residence  | residence |    9.0 kW | 13.4 kW @ 18:00 |       4.1 kW |       3 |
 
 `sea-office-001` is the default and is unchanged from the original
 single-building demo: same curves, same 14 events, same three actions, energy
@@ -192,6 +194,21 @@ critical-care reserve floor, so the plan is limited by *duration*, not power.
 The warehouse's entire peak is 24 delivery vans charging at once, so its plan
 re-queues half of them into the evening and the agent explicitly declines to
 invent an HVAC action for an unconditioned high bay — two actions, not three.
+
+`sea-residence-004` is the scale test. A 2,400 sqft house runs two orders of
+magnitude below the other three — 0.6 kW asleep, 1.9 kW at 10:00 — and its
+threshold is not a commercial demand charge but a residential demand-response
+cap: stay under 9 kW or pay. It breaks that cap for three hours because an
+11.5 kW wall charger starts at 17:30 on top of dinner and a heat pump, peaking
+at 13.4 kW at 18:00. The plan moves the whole 32 kWh session to 22:00 and then
+empties the two 13.5 kWh wall batteries into it at 8 kW, because moving the car
+alone would merely relocate the violation to 22:00; a 70–76 °F pre-cool-and-float
+picks up the rest. Peak 13.4 → 4.1 kW, energy $5.75 → $2.61/day, ≈$79 of
+penalty avoided. It is also the first fixture whose `grid_kw` goes **negative**:
+27 kWh of storage cannot absorb a 50 kWh solar day, so the pack fills at 11:00
+and the house exports to −4.0 kW through the middle of the afternoon. That is
+deliberate — it exercises the reversed-wire path in the flow diagram and the
+below-zero half of both charts, which no commercial site reaches.
 
 ### Flows and the sign convention
 
@@ -223,7 +240,7 @@ Two more invariants the UI can rely on:
 
 `validateFixtures()` in `src/mocks/buildings/index.ts` checks all of this once
 per process in development and `console.warn`s anything that drifts. The worst
-residual across all three buildings is currently ~1e-13 kW, i.e. float noise.
+residual across all four buildings is currently ~1e-13 kW, i.e. float noise.
 
 Nothing is random: every curve comes from a handful of control points in
 `src/mocks/buildings/shared.ts`, so the charts, the KPI tiles, the flow diagram

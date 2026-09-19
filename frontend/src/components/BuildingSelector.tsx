@@ -19,6 +19,7 @@ import {
   Check,
   ChevronDown,
   Hospital,
+  House,
   LoaderCircle,
   Warehouse,
   type LucideIcon,
@@ -33,6 +34,7 @@ const TYPE_ICON: Record<BuildingType, LucideIcon> = {
   office: Building2,
   hospital: Hospital,
   warehouse: Warehouse,
+  residence: House,
 };
 
 const TRIGGER = [

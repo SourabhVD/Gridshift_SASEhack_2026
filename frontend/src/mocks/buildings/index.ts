@@ -1,10 +1,12 @@
 /**
  * The building registry.
  *
- * Three Seattle sites on the same September weekday, same tariff, same "now".
+ * Four Seattle sites on the same September weekday, same tariff, same "now".
  * The office is the default and is byte-identical to the original single-
  * building demo; the hospital and the warehouse exist to give the flow diagram
- * and the building selector something with a different shape to say.
+ * and the building selector something with a different shape to say, and the
+ * residence drops two orders of magnitude to prove the contract reads the same
+ * at household scale.
  */
 
 import type { Building, EnergyFlows } from '@/types/api';
@@ -12,8 +14,9 @@ import { flowResidual, round1, type BuildingFixture } from './shared';
 import { OFFICE_ID, officeFixture } from './office';
 import { HOSPITAL_ID, hospitalFixture } from './hospital';
 import { WAREHOUSE_ID, warehouseFixture } from './warehouse';
+import { RESIDENCE_ID, residenceFixture } from './residence';
 
-export { OFFICE_ID, HOSPITAL_ID, WAREHOUSE_ID };
+export { OFFICE_ID, HOSPITAL_ID, WAREHOUSE_ID, RESIDENCE_ID };
 export type { BuildingFixture };
 
 /** The building the app opens on when nothing is stored. */
@@ -24,6 +27,7 @@ export const FIXTURES: readonly BuildingFixture[] = [
   officeFixture,
   hospitalFixture,
   warehouseFixture,
+  residenceFixture,
 ];
 
 const BY_ID = new Map<string, BuildingFixture>(
@@ -86,7 +90,7 @@ function checkFlows(
 }
 
 /**
- * Verifies, for all three buildings and all 24 hours:
+ * Verifies, for all four buildings and all 24 hours:
  *   1. the flow identity on baseline and optimized flows,
  *   2. `predicted_load_kw === flows.grid_kw`,
  *   3. `baseline_kw === baseline_flows.grid_kw`,

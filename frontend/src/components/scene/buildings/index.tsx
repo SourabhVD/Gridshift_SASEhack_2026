@@ -12,6 +12,7 @@
  */
 import type { BuildingModelProps } from '../contracts';
 import { Hospital } from './Hospital';
+import { House } from './House';
 import { OfficeTower } from './OfficeTower';
 import { Warehouse } from './Warehouse';
 
@@ -21,6 +22,8 @@ export function BuildingModel(props: BuildingModelProps) {
       return <Hospital {...props} />;
     case 'warehouse':
       return <Warehouse {...props} />;
+    case 'residence':
+      return <House {...props} />;
     case 'office':
     default:
       return <OfficeTower {...props} />;
@@ -30,5 +33,6 @@ export function BuildingModel(props: BuildingModelProps) {
 export default BuildingModel;
 
 export { Hospital } from './Hospital';
+export { House } from './House';
 export { OfficeTower } from './OfficeTower';
 export { Warehouse } from './Warehouse';

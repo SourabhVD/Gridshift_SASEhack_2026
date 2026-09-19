@@ -17,21 +17,37 @@ import { Suspense, useMemo } from 'react';
 import clsx from 'clsx';
 import { Canvas } from '@react-three/fiber';
 import { Html } from '@react-three/drei';
+import * as THREE from 'three';
 import { formatHourIndex, formatKw } from '@/lib/format';
 import type { EnergySceneProps } from './contracts';
 import { TOOL_NODES, type SceneNode } from './layout';
 import SceneEnvironment from './Environment';
+import Stage from './Stage';
+import Effects from './Effects';
 import CameraRig from './CameraRig';
 import SceneHud from './SceneHud';
 /* --- swap these two for the real models when they land --- */
 import { BuildingModel } from '@/components/scene/buildings';
 import { Devices } from '@/components/scene/devices';
 import { useWebGL } from './useWebGL';
+import { QualityGovernor, useQuality } from './useQuality';
 
 const NO_NODES: ReadonlySet<SceneNode> = new Set();
 
 /** Same framing as the 2D diagram, so the two views swap without a reflow. */
 const FRAME = 'relative aspect-[16/9] w-full overflow-hidden rounded-lg';
+
+/**
+ * The soft edge that dissolves the viewport into the card it sits in.
+ *
+ * The Canvas clears to transparent and the scene has no background, so what
+ * you see behind the models is `bg-base`. This gradient walks that back to
+ * `--color-surface` -- the card's own colour -- over the outer ~12 % of the
+ * frame, which removes the hard rectangle and makes the scene read as part of
+ * the panel rather than as a picture hung inside it.
+ */
+const EDGE_BLEND =
+  'radial-gradient(118% 118% at 50% 46%, transparent 58%, var(--color-surface) 100%)';
 
 function Skeleton({ className, label }: { className?: string; label: string }) {
   return (
@@ -54,6 +70,7 @@ export function EnergyScene({
   className,
 }: EnergySceneProps) {
   const webgl = useWebGL();
+  const quality = useQuality();
 
   const activeNodes = useMemo<ReadonlySet<SceneNode>>(() => {
     if (runStatus !== 'running' || !activeTool) return NO_NODES;
@@ -99,9 +116,29 @@ export function EnergyScene({
   return (
     <div className={clsx(FRAME, 'bg-base', className)} role="img" aria-label={summary}>
       <Canvas
-        shadows="soft"
-        dpr={[1, 1.75]}
-        gl={{ antialias: true, powerPreference: 'high-performance' }}
+        /* The two quality levels need different `gl` flags -- in 'high' the
+           composer's SMAA does the antialiasing, so the context's own MSAA is
+           dead weight. Keying on quality re-creates the context on a switch,
+           which is the only honest way to change a WebGL context attribute. */
+        key={quality}
+        /* three 0.186 removed PCFSoftShadowMap, so r3f's "soft" now falls back
+           to PCF with a console warning. Asking for PCF outright is the same
+           map without the warning -- and PCF is the one that honours the
+           sun's `shadow.radius`, which is where the soft edge comes from. */
+        shadows="percentage"
+        dpr={[1, 1.5]}
+        performance={{ min: 0.6 }}
+        gl={{
+          antialias: quality === 'low',
+          /* Transparent clear: the dashboard is the background. */
+          alpha: true,
+          powerPreference: 'high-performance',
+          toneMapping: THREE.ACESFilmicToneMapping,
+          /* The single source of exposure for both quality levels: the
+             ToneMapping effect reads gl.toneMappingExposure too. */
+          toneMappingExposure: 1.05,
+          outputColorSpace: THREE.SRGBColorSpace,
+        }}
         frameloop="always"
       >
         <Suspense
@@ -111,7 +148,8 @@ export function EnergyScene({
             </Html>
           }
         >
-          <SceneEnvironment hour={hour} />
+          <SceneEnvironment hour={hour} type={building.type} />
+          <Stage hour={hour} type={building.type} />
           <CameraRig type={building.type} activeNodes={activeNodes} />
 
           <BuildingModel
@@ -128,8 +166,14 @@ export function EnergyScene({
             activeNodes={activeNodes}
             running={runStatus === 'running'}
           />
+
+          {quality === 'high' ? <Effects /> : null}
         </Suspense>
+
+        <QualityGovernor />
       </Canvas>
+
+      <div aria-hidden className="pointer-events-none absolute inset-0" style={{ background: EDGE_BLEND }} />
 
       <SceneHud
         hour={hour}

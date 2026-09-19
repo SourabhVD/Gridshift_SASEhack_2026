@@ -10,7 +10,7 @@
 /* GET /api/buildings                                                          */
 /* -------------------------------------------------------------------------- */
 
-export type BuildingType = 'office' | 'hospital' | 'warehouse';
+export type BuildingType = 'office' | 'hospital' | 'warehouse' | 'residence';
 
 /** Static nameplate data for one site. Never changes during a session. */
 export interface Building {

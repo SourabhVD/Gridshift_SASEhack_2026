@@ -14,7 +14,7 @@ import * as THREE from 'three';
 
 export const PALETTE = {
   /** Ground pad slab under every building. */
-  pad: '#111827',
+  pad: '#1c2431',
   /** Lighter plinth / entrance canopy. */
   plinth: '#1f2937',
   plinthLight: '#334155',
