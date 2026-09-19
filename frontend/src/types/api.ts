@@ -7,10 +7,78 @@
  */
 
 /* -------------------------------------------------------------------------- */
+/* GET /api/buildings                                                          */
+/* -------------------------------------------------------------------------- */
+
+export type BuildingType = 'office' | 'hospital' | 'warehouse';
+
+/** Static nameplate data for one site. Never changes during a session. */
+export interface Building {
+  id: string;
+  name: string;
+  type: BuildingType;
+  address: string;
+  floors: number;
+  area_sqft: number;
+  /** Demand threshold the facility is billed against. */
+  peak_threshold_kw: number;
+  battery_capacity_kwh: number;
+  /** Inverter rating -- the most the battery can charge or discharge. */
+  battery_max_kw: number;
+  ev_bays: number;
+  /** PV nameplate. Actual generation peaks below this. */
+  solar_capacity_kw: number;
+  hvac_zones: number;
+}
+
+export interface BuildingsResponse {
+  buildings: Building[];
+}
+
+/* -------------------------------------------------------------------------- */
+/* Energy flows                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Where one hour's energy comes from and goes to, for the flow diagram.
+ *
+ * Sign convention -- ONLY `battery_kw` is signed:
+ *   battery_kw > 0  discharging into the building (reduces the grid draw)
+ *   battery_kw < 0  charging from the grid (increases the grid draw)
+ *   battery_kw = 0  idle
+ * Every other field is a non-negative magnitude.
+ *
+ * Identity that holds for every point, to within 0.1 kW:
+ *
+ *   grid_kw = base_kw + ev_kw + hvac_kw - solar_kw - battery_kw
+ *
+ * i.e. the three consumers (base, EV, HVAC) are served first by the two
+ * on-site sources (solar, battery) and the grid covers whatever is left.
+ */
+export interface EnergyFlows {
+  /** Net import from the utility. Equals the forecast/impact kW for this hour. */
+  grid_kw: number;
+  /** PV generation. 0 at night. */
+  solar_kw: number;
+  /** Signed. See the convention above. */
+  battery_kw: number;
+  /** EV charging draw across all occupied bays. */
+  ev_kw: number;
+  /** Cooling + ventilation draw. */
+  hvac_kw: number;
+  /** Everything else: lighting, plug loads, process equipment, elevators. */
+  base_kw: number;
+  /** State of charge at the end of this hour. */
+  battery_soc_pct: number;
+}
+
+/* -------------------------------------------------------------------------- */
 /* GET /api/dashboard/summary                                                  */
 /* -------------------------------------------------------------------------- */
 
 export interface DashboardSummary {
+  building_id: string;
+  building_type: BuildingType;
   building_name: string;
   /** ISO 8601 with timezone offset. "Now" for the whole dashboard. */
   timestamp: string;
@@ -44,6 +112,8 @@ export interface ForecastPoint {
   price_per_kwh: number;
   /** True when predicted_load_kw exceeds peak_threshold_kw. */
   is_peak: boolean;
+  /** Breakdown of this hour. `flows.grid_kw === predicted_load_kw`. */
+  flows: EnergyFlows;
 }
 
 export interface ForecastResponse {
@@ -157,6 +227,10 @@ export interface ImpactPoint {
   timestamp: string;
   baseline_kw: number;
   optimized_kw: number;
+  /** Do-nothing breakdown. `baseline_flows.grid_kw === baseline_kw`. */
+  baseline_flows: EnergyFlows;
+  /** Post-plan breakdown. `optimized_flows.grid_kw === optimized_kw`. */
+  optimized_flows: EnergyFlows;
 }
 
 /** GET /api/gridshift/{run_id}/plan */

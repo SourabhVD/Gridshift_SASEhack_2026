@@ -32,7 +32,7 @@ const LINK_BUTTON = [
 ].join(' ');
 
 export function PeakAlert() {
-  const { summary, forecast, runStatus, events, plan, error, startRun, reset } =
+  const { summary, forecast, runStatus, events, plan, error, isLoading, startRun, reset } =
     useGridShift();
 
   if (!forecast) return null;
@@ -90,7 +90,13 @@ export function PeakAlert() {
       {/* --------------------------------------------------------------- CTA */}
       <div className="flex shrink-0 flex-wrap items-center gap-3 sm:justify-end">
         {runStatus === 'idle' && (
-          <button type="button" onClick={() => void startRun()} className={PRIMARY_BUTTON}>
+          <button
+            type="button"
+            onClick={() => void startRun()}
+            disabled={isLoading}
+            className={clsx(PRIMARY_BUTTON, isLoading && 'opacity-60')}
+          >
+            {isLoading && <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />}
             Run GridShift
           </button>
         )}

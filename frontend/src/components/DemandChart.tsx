@@ -11,7 +11,7 @@
  * which is the only way Recharts can read them from JS.
  */
 
-import { useMemo } from 'react';
+import { useCallback, useMemo, useRef } from 'react';
 import {
   Area,
   CartesianGrid,
@@ -31,6 +31,9 @@ import { formatHour, formatKw, formatPrice } from '@/lib/format';
 import { useGridShift } from '@/lib/store';
 
 const CHART_HEIGHT = 300;
+
+/** Last index of the 24-hour day. */
+const LAST_HOUR = 23;
 
 const COLOR = {
   forecast: 'var(--color-forecast)',
@@ -178,7 +181,37 @@ function Swatch({
 /* -------------------------------------------------------------------------- */
 
 export function DemandChart() {
-  const { forecast, summary, plan } = useGridShift();
+  const { forecast, building, plan, viewMode, viewHour, nowHour, setViewHour } =
+    useGridShift();
+
+  /**
+   * Click-to-scrub. `rows` is in forecast order, so recharts' active index IS
+   * the hour -- but recharts 3 clears the active index before it calls the
+   * click handler, so the last hovered index is kept in a ref and used as the
+   * fallback. State is typed `unknown` deliberately: the chart-state shape is
+   * not a public recharts type worth depending on.
+   */
+  const hoveredHourRef = useRef<number | null>(null);
+
+  const activeHour = (state: unknown): number | null => {
+    const raw = (state as { activeTooltipIndex?: number | string | null } | null)
+      ?.activeTooltipIndex;
+    if (raw === null || raw === undefined) return null;
+    const index = Number(raw);
+    return Number.isInteger(index) && index >= 0 && index <= LAST_HOUR ? index : null;
+  };
+
+  const onChartMove = useCallback((state: unknown) => {
+    hoveredHourRef.current = activeHour(state);
+  }, []);
+
+  const onChartClick = useCallback(
+    (state: unknown) => {
+      const hour = activeHour(state) ?? hoveredHourRef.current;
+      if (hour !== null) setViewHour(hour);
+    },
+    [setViewHour],
+  );
 
   const rows = useMemo<Row[]>(() => {
     if (!forecast) return [];
@@ -229,15 +262,21 @@ export function DemandChart() {
 
   const threshold = forecast.peak_threshold_kw;
   const peakHours = rows.filter((r) => r.isPeak).length;
-  const nowHour = formatHour(summary?.timestamp ?? forecast.generated_at);
-  const hasNow = rows.some((r) => r.hour === nowHour);
+  /** `rows` is in forecast order, so an hour index addresses its own row. */
+  const nowLabel = rows[nowHour]?.hour ?? null;
+  const viewLabel = rows[viewHour]?.hour ?? null;
+  const isScrubbed = viewHour !== nowHour;
+  /** With a plan on screen in optimized mode, the baseline steps back. */
+  const dimBaseline = viewMode === 'optimized' && plan !== null;
   /** Every third hour, so the axis stays legible on a projector. */
   const ticks = rows.filter((_, i) => i % 3 === 0).map((r) => r.hour);
 
   return (
     <Card
       title="24-hour demand forecast"
-      subtitle={`${forecast.building_name} · generated ${formatDate(forecast.generated_at)}`}
+      subtitle={`${building?.name ?? forecast.building_name} · generated ${formatDate(
+        forecast.generated_at,
+      )}`}
       right={
         peakHours > 0 ? (
           <Badge tone="alert">{`${peakHours}h over threshold`}</Badge>
@@ -251,8 +290,13 @@ export function DemandChart() {
         <span className="ml-auto text-[11px] text-muted">kW</span>
       </div>
 
-      <ResponsiveContainer width="100%" height={CHART_HEIGHT}>
-        <ComposedChart data={rows} margin={{ top: 12, right: 8, bottom: 0, left: 0 }}>
+      <ResponsiveContainer width="100%" height={CHART_HEIGHT} className="cursor-pointer">
+        <ComposedChart
+          data={rows}
+          margin={{ top: 12, right: 8, bottom: 0, left: 0 }}
+          onClick={onChartClick}
+          onMouseMove={onChartMove}
+        >
           <CartesianGrid vertical={false} stroke={COLOR.line} />
 
           <XAxis
@@ -289,8 +333,9 @@ export function DemandChart() {
             name="Forecast"
             stroke={COLOR.forecast}
             strokeWidth={2}
+            strokeOpacity={dimBaseline ? 0.6 : 1}
             fill={COLOR.forecast}
-            fillOpacity={0.12}
+            fillOpacity={dimBaseline ? 0.07 : 0.12}
             dot={false}
             activeDot={{ r: 3, strokeWidth: 0, fill: COLOR.forecast }}
             isAnimationActive={false}
@@ -334,9 +379,9 @@ export function DemandChart() {
             }}
           />
 
-          {hasNow && (
+          {nowLabel !== null && (
             <ReferenceLine
-              x={nowHour}
+              x={nowLabel}
               stroke={COLOR.muted}
               strokeDasharray="3 3"
               strokeWidth={1}
@@ -346,6 +391,24 @@ export function DemandChart() {
                 fill: COLOR.muted,
                 fontSize: 11,
               }}
+            />
+          )}
+
+          {viewLabel !== null && (
+            <ReferenceLine
+              x={viewLabel}
+              stroke={COLOR.forecast}
+              strokeWidth={1.5}
+              label={
+                isScrubbed
+                  ? {
+                      value: 'Viewing',
+                      position: 'top',
+                      fill: COLOR.forecast,
+                      fontSize: 11,
+                    }
+                  : undefined
+              }
             />
           )}
 

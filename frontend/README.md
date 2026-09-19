@@ -18,7 +18,8 @@ npm run dev      # http://localhost:3000
 
 No backend is required. `NEXT_PUBLIC_USE_MOCK` defaults to `true`, so the app
 serves fixtures from `src/mocks/` and simulates the agent run in memory
-(~17 seconds, 14 events, then the action plan appears).
+(~17 seconds, 14 events, then the action plan appears). All three buildings are
+served from the mock, each with its own run, plan and 14-event script.
 
 ```bash
 npm run lint     # eslint
@@ -42,8 +43,20 @@ Restart the dev server — these are `NEXT_PUBLIC_*` vars and are inlined at bui
 time. Nothing else changes: `src/lib/api.ts` swaps the mock server for `fetch`
 behind the same function signatures.
 
-The backend must send CORS headers allowing `http://localhost:3000`. The exact
-payloads it has to return are in [`../docs/API_CONTRACT.md`](../docs/API_CONTRACT.md).
+| Variable                   | Default                 | Meaning                                                      |
+| -------------------------- | ----------------------- | ------------------------------------------------------------ |
+| `NEXT_PUBLIC_USE_MOCK`     | `true`                  | Anything but `'false'` serves the in-memory fixtures.         |
+| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | Origin of the FastAPI backend. No trailing slash.             |
+
+The backend must send CORS headers allowing `http://localhost:3000`, serve
+`GET /api/buildings`, and accept `building_id` on every building-scoped
+endpoint (see the table below). The exact payloads it has to return are in
+[`../docs/API_CONTRACT.md`](../docs/API_CONTRACT.md).
+
+One value is not an env var: `DEFAULT_BUILDING_ID` in `src/lib/store.tsx`
+(`sea-office-001`), the site the app opens on before anything is stored in
+`localStorage`. It is duplicated there rather than imported from the fixtures so
+that a real-backend build does not pull the mock data into the bundle.
 
 ---
 
@@ -68,14 +81,38 @@ src/
 ├── lib/
 │   ├── api.ts              The only module that talks to the backend
 │   ├── store.tsx           GridShiftProvider + useGridShift() — shared state
-│   ├── format.ts           Display formatters (kW, USD, hours, temps)
+│   ├── format.ts           Display formatters (kW, USD, hours, temps, flows)
 │   └── errors.ts           ApiError
 ├── mocks/
-│   ├── fixtures.ts         All demo data. Internally consistent numbers.
-│   └── mockServer.ts       In-memory backend: replays the run in real time
+│   ├── fixtures.ts         Entry point — re-exports the registry
+│   ├── mockServer.ts       In-memory backend: replays the run in real time,
+│   │                       one run + one plan per building
+│   └── buildings/
+│       ├── shared.ts       Deterministic generator + the flow identity
+│       ├── office.ts       sea-office-001    Cascade Commerce Center
+│       ├── hospital.ts     sea-hospital-002  Harborview Medical Annex
+│       ├── warehouse.ts    sea-warehouse-003 Duwamish Logistics Hub
+│       └── index.ts        Registry, getFixture(), validateFixtures()
 └── types/
     └── api.ts              Wire types, snake_case, mirror the Pydantic models
 ```
+
+### Endpoints
+
+| Endpoint                          | Scope    | Building id passed as   |
+| --------------------------------- | -------- | ----------------------- |
+| `GET /api/buildings`              | global   | —                       |
+| `GET /api/dashboard/summary`      | building | `?building_id=`         |
+| `GET /api/forecast`               | building | `?building_id=`         |
+| `POST /api/gridshift/run`         | building | body `{ building_id }`  |
+| `POST /api/demo/reset`            | building | body `{ building_id }`  |
+| `GET /api/gridshift/{id}/events`  | run      | — (run id implies it)   |
+| `GET /api/gridshift/{id}/plan`    | run      | — (run id implies it)   |
+| `POST /api/actions/{id}/approve`  | action   | — (action id implies it)|
+| `POST /api/actions/{id}/reject`   | action   | — (action id implies it)|
+
+`reset` clears only the building you pass; a run in progress on another
+building survives.
 
 ---
 
@@ -91,9 +128,21 @@ Two rules:
    fetching, the 1-second poll loop, and error state. Components read:
 
    ```tsx
-   const { summary, forecast, runId, runStatus, events, plan,
-           error, isLoading, isMock,
-           startRun, approve, reject, reset } = useGridShift();
+   const {
+     // buildings
+     buildings, building, buildingId, selectBuilding,
+     // data
+     summary, forecast, runId, runStatus, events, plan,
+     error, isLoading, isMock,
+     // time cursor
+     nowHour, viewHour, setViewHour, isPlaying, play, pause, togglePlay,
+     // flows
+     viewMode, setViewMode, flowsAt, currentFlows,
+     // agent
+     activeTool,
+     // actions
+     startRun, approve, reject, reset,
+   } = useGridShift();
    ```
 
 2. **Never hardcode a colour.** Use the Tailwind utilities generated from the
@@ -118,18 +167,84 @@ Opacity modifiers work as usual: `bg-good/10`, `border-alert/30`.
 
 ---
 
-## The demo data
+## Buildings and flows
 
-One medium office building (~150,000 sq ft) in Seattle on a September weekday,
-pinned to `2025-09-18` with "now" at `10:00`.
+### The three sites
 
-- Baseline peak **522 kW at 15:00**, threshold **450 kW**, exceeded 13:00–17:00.
-- Optimizer cuts the peak to **438 kW** (−84 kW). The new peak is set by 18:00,
-  not 15:00 — the shifted EV load becomes the binding interval.
-- Three actions: battery 90 kW for 14:00–17:00, four EV sessions moved to
-  18:00–20:00, HVAC pre-cool then +3 °F float.
-- Energy cost $869.59 → $847.37 (**$22.22**/day). The headline number is the
-  demand charge: 84 kW × $8.50/kW ≈ **$714/month** avoided.
+Three Seattle buildings on the same September weekday, pinned to `2025-09-18`
+with "now" at `10:00`, on the same tariff ($0.09/kWh off-peak, $0.16/kWh
+14:00–20:00, $8.50/kW monthly demand charge).
 
-Every figure above is computed in `src/mocks/fixtures.ts` from the same hourly
-arrays, so the charts, the KPI tiles and the plan cannot disagree.
+| id                  | Building                | Type      | Threshold | Baseline peak | Optimized peak | Actions |
+| ------------------- | ----------------------- | --------- | --------: | ------------: | -------------: | ------: |
+| `sea-office-001`    | Cascade Commerce Center | office    |    450 kW | 522 kW @ 15:00 |        438 kW |       3 |
+| `sea-hospital-002`  | Harborview Medical Annex| hospital  |    800 kW | 884 kW @ 14:00 |        792 kW |       3 |
+| `sea-warehouse-003` | Duwamish Logistics Hub  | warehouse |    350 kW | 426 kW @ 15:00 |        311 kW |       2 |
+
+`sea-office-001` is the default and is unchanged from the original
+single-building demo: same curves, same 14 events, same three actions, energy
+cost $869.59 → $847.37 (**$22.22**/day) and 84 kW × $8.50/kW ≈ **$714/month**
+of demand charge avoided.
+
+The other two exist to give the UI something with a different shape to say.
+The hospital is six hours over threshold and its battery carries a 30%
+critical-care reserve floor, so the plan is limited by *duration*, not power.
+The warehouse's entire peak is 24 delivery vans charging at once, so its plan
+re-queues half of them into the evening and the agent explicitly declines to
+invent an HVAC action for an unconditioned high bay — two actions, not three.
+
+### Flows and the sign convention
+
+Every forecast point and every impact point carries an `EnergyFlows` breakdown:
+
+```ts
+{ grid_kw, solar_kw, battery_kw, ev_kw, hvac_kw, base_kw, battery_soc_pct }
+```
+
+`battery_kw` is **the only signed field**:
+
+- `> 0` — discharging **into** the building (reduces the grid draw)
+- `< 0` — charging **from** the grid (increases the grid draw)
+- `= 0` — idle
+
+Everything else is a non-negative magnitude. The identity below holds at every
+hour of every building, to within 0.1 kW — the three consumers are served first
+by the two on-site sources, and the grid covers the remainder:
+
+```
+grid_kw = base_kw + ev_kw + hvac_kw - solar_kw - battery_kw
+```
+
+Two more invariants the UI can rely on:
+
+- `forecast.points[h].flows.grid_kw === forecast.points[h].predicted_load_kw`
+- `plan.impact[h].baseline_flows.grid_kw === plan.impact[h].baseline_kw` and
+  `plan.impact[h].optimized_flows.grid_kw === plan.impact[h].optimized_kw`
+
+`validateFixtures()` in `src/mocks/buildings/index.ts` checks all of this once
+per process in development and `console.warn`s anything that drifts. The worst
+residual across all three buildings is currently ~1e-13 kW, i.e. float noise.
+
+Nothing is random: every curve comes from a handful of control points in
+`src/mocks/buildings/shared.ts`, so the charts, the KPI tiles, the flow diagram
+and the action plan are reading the same arithmetic and cannot disagree.
+
+### Store fields for the new UI
+
+| Field                                | Type                         | Notes                                                        |
+| ------------------------------------ | ---------------------------- | ------------------------------------------------------------ |
+| `buildings`                          | `Building[]`                 | From `GET /api/buildings`.                                    |
+| `building`                           | `Building \| null`           | The selected record.                                          |
+| `buildingId`                         | `string`                     | Persisted in `localStorage` under `gridshift.buildingId`.      |
+| `selectBuilding(id)`                 | `=> Promise<void>`           | Aborts polling + playback, clears the run, loads the new site. |
+| `nowHour`                            | `number`                     | Hour of `summary.timestamp`; `10` before the summary lands.    |
+| `viewHour` / `setViewHour(h)`        | `number` / `(h) => void`     | 0–23, clamped. Rewinds to `nowHour` on select and reset.       |
+| `isPlaying` / `play` / `pause` / `togglePlay` | `boolean` / `() => void` | 1 hour per 700 ms; restarts from 0 at 23 and stops at 23.  |
+| `viewMode` / `setViewMode(m)`        | `'baseline' \| 'optimized'`  | Flips to `optimized` when a plan lands, unless you set it.     |
+| `flowsAt(h)`                         | `(h) => EnergyFlows \| null` | Plan in `optimized` mode, forecast otherwise. Stable identity. |
+| `currentFlows`                       | `EnergyFlows \| null`        | `flowsAt(viewHour)`, memoised.                                 |
+| `activeTool`                         | `AgentToolName \| null`      | In-flight tool during a run; `null` otherwise.                 |
+
+`flowsAt` only changes identity when `forecast`, `plan` or `viewMode` change —
+the 1 s events poll and the 700 ms playback tick do not invalidate it, so
+consumers can safely memoise on it.

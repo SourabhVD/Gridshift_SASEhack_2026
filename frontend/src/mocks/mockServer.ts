@@ -6,6 +6,11 @@
  * against FastAPI: startRun() stamps a clock, getEvents() reveals the events
  * whose scheduled offset has elapsed, and getPlan() 404s until the run is done.
  *
+ * State is keyed per building. Two buildings can hold a finished plan at the
+ * same time, and resetting one leaves the others alone -- which is what the
+ * building selector needs, since switching sites must not wipe a run you are
+ * still reading.
+ *
  * Only src/lib/api.ts should import this module.
  */
 
@@ -14,6 +19,7 @@ import type {
   ActionDecisionResponse,
   ActionPlan,
   AgentEvent,
+  BuildingsResponse,
   DashboardSummary,
   EventsResponse,
   ForecastResponse,
@@ -24,11 +30,14 @@ import type {
 import { ApiError } from '@/lib/errors';
 import {
   AGENT_SCRIPT,
+  BUILDINGS,
+  DEFAULT_BUILDING_ID,
   NOW_ISO,
   SCRIPT_DURATION_MS,
-  buildForecast,
-  buildPlan,
-  buildSummary,
+  type BuildingFixture,
+  type ScriptedEvent,
+  getFixture,
+  validateFixtures,
 } from './fixtures';
 
 /** Timing wobble applied per event so the log does not tick like a metronome. */
@@ -36,6 +45,8 @@ const JITTER_MS = 150;
 
 interface RunState {
   run_id: string;
+  building_id: string;
+  script: ScriptedEvent[];
   /** performance/Date clock at startRun(). */
   started_at_ms: number;
   started_at_iso: string;
@@ -45,8 +56,14 @@ interface RunState {
   plan: ActionPlan | null;
 }
 
-let currentRun: RunState | null = null;
+/** building_id -> its most recent run. At most one run per building. */
+const runsByBuilding = new Map<string, RunState>();
+/** run_id -> building_id, so run-scoped endpoints do not need a building. */
+const buildingByRun = new Map<string, string>();
 let runCounter = 0;
+
+// Fixtures are generated, not hand-typed, so check the arithmetic once on load.
+validateFixtures();
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                     */
@@ -65,14 +82,22 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function requireFixture(endpoint: string, buildingId: string): BuildingFixture {
+  const fixture = getFixture(buildingId);
+  if (!fixture) {
+    throw new ApiError(404, endpoint, `Unknown building "${buildingId}".`);
+  }
+  return fixture;
+}
+
 /**
  * Jittered reveal schedule. Jitter is computed once per run (not per poll) so
  * an event can never appear and then disappear, and offsets are forced
  * non-decreasing so events always surface in seq order.
  */
-function buildRevealOffsets(): number[] {
+function buildRevealOffsets(script: ScriptedEvent[]): number[] {
   let previous = -1;
-  return AGENT_SCRIPT.map((event) => {
+  return script.map((event) => {
     const jittered = event.offset_ms + (Math.random() * 2 - 1) * JITTER_MS;
     const offset = Math.max(previous + 1, Math.round(jittered), 0);
     previous = offset;
@@ -85,11 +110,11 @@ function eventTimestamp(offsetMs: number): string {
   return new Date(Date.parse(NOW_ISO) + offsetMs).toISOString();
 }
 
-function materializeEvent(index: number, runId: string): AgentEvent {
-  const scripted = AGENT_SCRIPT[index];
+function materializeEvent(run: RunState, index: number): AgentEvent {
+  const scripted = run.script[index];
   return {
-    id: `${runId}-evt-${String(scripted.seq).padStart(2, '0')}`,
-    run_id: runId,
+    id: `${run.run_id}-evt-${String(scripted.seq).padStart(2, '0')}`,
+    run_id: run.run_id,
     seq: scripted.seq,
     timestamp: eventTimestamp(scripted.offset_ms),
     type: scripted.type,
@@ -113,10 +138,12 @@ function derivePlanStatus(actions: Action[]): RunStatus {
 }
 
 function requireRun(endpoint: string, runId: string): RunState {
-  if (!currentRun || currentRun.run_id !== runId) {
+  const buildingId = buildingByRun.get(runId);
+  const run = buildingId ? runsByBuilding.get(buildingId) : undefined;
+  if (!run || run.run_id !== runId) {
     throw new ApiError(404, endpoint, `Run ${runId} not found. Start a run first.`);
   }
-  return currentRun;
+  return run;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -124,31 +151,45 @@ function requireRun(endpoint: string, runId: string): RunState {
 /* -------------------------------------------------------------------------- */
 
 export const mockServer = {
-  async getSummary(): Promise<DashboardSummary> {
+  async getBuildings(): Promise<BuildingsResponse> {
     await networkLag();
-    return buildSummary();
+    return clone({ buildings: [...BUILDINGS] });
   },
 
-  async getForecast(): Promise<ForecastResponse> {
+  async getSummary(buildingId: string = DEFAULT_BUILDING_ID): Promise<DashboardSummary> {
     await networkLag();
-    return buildForecast();
+    return requireFixture('/api/dashboard/summary', buildingId).buildSummary();
   },
 
-  async startRun(): Promise<RunResponse> {
+  async getForecast(buildingId: string = DEFAULT_BUILDING_ID): Promise<ForecastResponse> {
     await networkLag();
+    return clone(requireFixture('/api/forecast', buildingId).buildForecast());
+  },
+
+  async startRun(buildingId: string = DEFAULT_BUILDING_ID): Promise<RunResponse> {
+    await networkLag();
+    const fixture = requireFixture('/api/gridshift/run', buildingId);
+
     runCounter += 1;
     const runId = `run-${Date.now().toString(36)}-${runCounter}`;
     const startedAt = new Date();
 
-    currentRun = {
+    // A new run supersedes this building's previous one.
+    const previous = runsByBuilding.get(buildingId);
+    if (previous) buildingByRun.delete(previous.run_id);
+
+    runsByBuilding.set(buildingId, {
       run_id: runId,
+      building_id: buildingId,
+      script: fixture.script,
       started_at_ms: startedAt.getTime(),
       started_at_iso: startedAt.toISOString(),
-      reveal_offsets_ms: buildRevealOffsets(),
+      reveal_offsets_ms: buildRevealOffsets(fixture.script),
       plan: null,
-    };
+    });
+    buildingByRun.set(runId, buildingId);
 
-    return { run_id: runId, status: 'running', started_at: currentRun.started_at_iso };
+    return { run_id: runId, status: 'running', started_at: startedAt.toISOString() };
   },
 
   async getEvents(runId: string): Promise<EventsResponse> {
@@ -157,13 +198,13 @@ export const mockServer = {
 
     const elapsed = Date.now() - run.started_at_ms;
     const events: AgentEvent[] = [];
-    for (let i = 0; i < AGENT_SCRIPT.length; i += 1) {
+    for (let i = 0; i < run.script.length; i += 1) {
       if (run.reveal_offsets_ms[i] <= elapsed) {
-        events.push(materializeEvent(i, runId));
+        events.push(materializeEvent(run, i));
       }
     }
 
-    const isComplete = events.length === AGENT_SCRIPT.length;
+    const isComplete = events.length === run.script.length;
     const status: RunStatus = isComplete
       ? (run.plan?.status ?? 'awaiting_approval')
       : 'running';
@@ -186,7 +227,7 @@ export const mockServer = {
       );
     }
 
-    run.plan ??= buildPlan(runId);
+    run.plan ??= requireFixture(endpoint, run.building_id).buildPlan(runId);
     return clone(run.plan);
   },
 
@@ -197,21 +238,23 @@ export const mockServer = {
     await networkLag();
     const endpoint = `/api/actions/${actionId}/${decision === 'approved' ? 'approve' : 'reject'}`;
 
-    if (!currentRun?.plan) {
-      throw new ApiError(404, endpoint, 'No action plan is awaiting a decision.');
+    // Actions are unique across buildings, so find the plan that owns this one.
+    let plan: ActionPlan | null = null;
+    let action: Action | undefined;
+    for (const run of runsByBuilding.values()) {
+      const match = run.plan?.actions.find((a) => a.id === actionId);
+      if (run.plan && match) {
+        plan = run.plan;
+        action = match;
+        break;
+      }
     }
 
-    const plan = currentRun.plan;
-    const action = plan.actions.find((a) => a.id === actionId);
-    if (!action) {
-      throw new ApiError(404, endpoint, `Action ${actionId} not found in the current plan.`);
+    if (!plan || !action) {
+      throw new ApiError(404, endpoint, 'No action plan is awaiting a decision.');
     }
     if (action.status !== 'pending') {
-      throw new ApiError(
-        409,
-        endpoint,
-        `Action ${actionId} was already ${action.status}.`,
-      );
+      throw new ApiError(409, endpoint, `Action ${actionId} was already ${action.status}.`);
     }
 
     action.status = decision;
@@ -220,15 +263,22 @@ export const mockServer = {
     return { action: clone(action), plan: clone(plan) };
   },
 
-  async resetDemo(): Promise<ResetResponse> {
+  async resetDemo(buildingId: string = DEFAULT_BUILDING_ID): Promise<ResetResponse> {
     await networkLag();
-    currentRun = null;
+    const fixture = requireFixture('/api/demo/reset', buildingId);
+
+    const existing = runsByBuilding.get(buildingId);
+    if (existing) buildingByRun.delete(existing.run_id);
+    runsByBuilding.delete(buildingId);
+
     return {
       ok: true,
-      message: 'Demo reset. Forecast and building state restored; no run in progress.',
+      message: `Demo reset for ${fixture.building.name}. Forecast and building state restored; no run in progress.`,
     };
   },
 };
 
 /** Exported for tests / debugging only. */
 export const MOCK_RUN_DURATION_MS = SCRIPT_DURATION_MS;
+/** Exported for tests / debugging only. */
+export const DEFAULT_SCRIPT_LENGTH = AGENT_SCRIPT.length;

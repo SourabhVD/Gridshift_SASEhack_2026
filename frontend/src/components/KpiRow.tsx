@@ -3,7 +3,11 @@
 /**
  * KpiRow -- the five headline numbers for the Energy Command Center.
  *
- * Reads summary (and forecast, for the tariff context line) from useGridShift().
+ * Four of the five follow the scrubber: load, battery, solar and price are read
+ * out of `flowsAt(viewHour)` / `forecast.points[viewHour]`, so the row always
+ * agrees with the flow diagram and the chart marker. Only the predicted peak is
+ * a day-level number and stays put.
+ *
  * Renders skeleton tiles until `summary` arrives so the row never collapses.
  */
 
@@ -21,6 +25,7 @@ import type { ReactNode } from 'react';
 import { Card } from '@/components/ui/Card';
 import {
   formatHour,
+  formatHourIndex,
   formatKw,
   formatPct,
   formatPrice,
@@ -60,9 +65,19 @@ interface TileProps {
   /** Meter, bar or glyph rendered between the value and the context line. */
   meter?: ReactNode;
   context: ReactNode;
+  /** Optional second context line, e.g. the optimized peak. */
+  footer?: ReactNode;
 }
 
-function Tile({ icon: Icon, label, stat, valueClassName, meter, context }: TileProps) {
+function Tile({
+  icon: Icon,
+  label,
+  stat,
+  valueClassName,
+  meter,
+  context,
+  footer,
+}: TileProps) {
   const { value, unit } = splitStat(stat);
 
   return (
@@ -77,7 +92,7 @@ function Tile({ icon: Icon, label, stat, valueClassName, meter, context }: TileP
       <div className="mt-2.5 flex items-baseline gap-1.5">
         <span
           className={clsx(
-            'text-[26px] leading-none font-semibold tabular-nums',
+            'text-[26px] leading-none font-semibold tabular-nums transition-colors',
             valueClassName ?? 'text-ink',
           )}
         >
@@ -89,6 +104,7 @@ function Tile({ icon: Icon, label, stat, valueClassName, meter, context }: TileP
       {meter && <div className="mt-3">{meter}</div>}
 
       <p className="mt-2 truncate text-xs text-muted">{context}</p>
+      {footer && <p className="mt-0.5 truncate text-xs">{footer}</p>}
     </Card>
   );
 }
@@ -120,7 +136,7 @@ function LoadBar({ pct }: { pct: number }) {
   return (
     <div className="h-1 w-full overflow-hidden rounded-full bg-surface-2">
       <div
-        className={clsx('h-full rounded-full', LOAD_BAR_CLASSES[tone])}
+        className={clsx('h-full rounded-full transition-[width]', LOAD_BAR_CLASSES[tone])}
         style={{ width: `${width}%` }}
       />
     </div>
@@ -143,12 +159,23 @@ function BatteryGlyph({ filled }: { filled: number }) {
   );
 }
 
+/** The "this is not now" marker on the tiles that follow the scrubber. */
+function PreviewDot() {
+  return (
+    <span className="mr-1.5 inline-flex items-center gap-1 text-forecast">
+      <span className="inline-block h-1.5 w-1.5 rounded-full bg-forecast align-middle" />
+      preview
+    </span>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /* KpiRow                                                                      */
 /* -------------------------------------------------------------------------- */
 
 export function KpiRow() {
-  const { summary, forecast } = useGridShift();
+  const { summary, forecast, building, plan, viewMode, viewHour, nowHour, flowsAt } =
+    useGridShift();
 
   if (!summary) {
     return (
@@ -160,27 +187,37 @@ export function KpiRow() {
     );
   }
 
-  const threshold = summary.peak_threshold_kw;
+  const flows = flowsAt(viewHour);
+  const isScrubbed = viewHour !== nowHour;
+  const threshold = building?.peak_threshold_kw ?? summary.peak_threshold_kw;
 
-  /* 1 -- current load vs the billed threshold */
-  const loadPct = threshold > 0 ? (summary.current_load_kw / threshold) * 100 : 0;
+  /* 1 -- load at the viewed hour, against the billed threshold */
+  const loadKw = flows?.grid_kw ?? summary.current_load_kw;
+  const loadPct = threshold > 0 ? (loadKw / threshold) * 100 : 0;
 
-  /* 2 -- predicted peak */
+  /* 2 -- predicted peak: a day-level number, so it ignores the scrubber */
   const overBy = summary.predicted_peak_kw - threshold;
   const isOverThreshold = overBy > 0;
+  const showOptimizedPeak = viewMode === 'optimized' && plan !== null;
 
-  /* 3 -- battery */
-  const availableKwh = (summary.battery_soc_pct / 100) * summary.battery_capacity_kwh;
+  /* 3 -- battery at the viewed hour */
+  const socPct = flows?.battery_soc_pct ?? summary.battery_soc_pct;
+  const batteryKw = flows?.battery_kw ?? 0;
+  const availableKwh = (socPct / 100) * summary.battery_capacity_kwh;
   const filledSegments = Math.max(
     0,
-    Math.min(
-      BATTERY_SEGMENTS,
-      Math.round((summary.battery_soc_pct / 100) * BATTERY_SEGMENTS),
-    ),
+    Math.min(BATTERY_SEGMENTS, Math.round((socPct / 100) * BATTERY_SEGMENTS)),
   );
+  const batteryState =
+    batteryKw > 0
+      ? `discharging ${formatKw(batteryKw)}`
+      : batteryKw < 0
+        ? `charging ${formatKw(Math.abs(batteryKw))}`
+        : 'idle';
 
   /* 4 -- tariff. Prefer the forecast's own price curve over a hard-coded hour. */
-  const nowHour = new Date(summary.timestamp).getHours();
+  const priceNow =
+    forecast?.points[viewHour]?.price_per_kwh ?? summary.electricity_price_per_kwh;
   const nextPeakPrice = forecast?.points.find(
     (p) =>
       p.price_per_kwh > summary.electricity_price_per_kwh &&
@@ -192,14 +229,23 @@ export function KpiRow() {
       ? 'On-peak pricing now'
       : 'Peak pricing from 14:00';
 
+  /* 5 -- solar at the viewed hour */
+  const solarKw = flows?.solar_kw ?? summary.solar_generation_kw;
+
   return (
     <div className={GRID}>
       <Tile
         icon={Zap}
-        label="Current load"
-        stat={formatKw(summary.current_load_kw)}
+        label={isScrubbed ? `Load at ${formatHourIndex(viewHour)}` : 'Current load'}
+        stat={formatKw(loadKw)}
+        valueClassName={loadKw > threshold ? 'text-alert' : 'text-ink'}
         meter={<LoadBar pct={loadPct} />}
-        context={`vs ${formatKw(threshold)} threshold`}
+        context={
+          <>
+            {isScrubbed && <PreviewDot />}
+            {`vs ${formatKw(threshold)} threshold`}
+          </>
+        }
       />
 
       <Tile
@@ -210,30 +256,42 @@ export function KpiRow() {
         context={`${formatHour(summary.predicted_peak_time)} · ${
           isOverThreshold ? `+${formatKw(overBy)} over threshold` : 'under threshold'
         }`}
+        footer={
+          showOptimizedPeak ? (
+            <span className="text-good">
+              {`→ ${formatKw(plan.optimized_peak_kw)} optimized`}
+            </span>
+          ) : undefined
+        }
       />
 
       <Tile
         icon={BatteryMedium}
         label="Battery"
-        stat={formatPct(summary.battery_soc_pct)}
+        stat={formatPct(socPct)}
         valueClassName="text-battery"
         meter={<BatteryGlyph filled={filledSegments} />}
-        context={`${Math.round(availableKwh)} of ${summary.battery_capacity_kwh} kWh · ${formatKw(
-          summary.battery_max_kw,
-        )} max`}
+        context={`${batteryState} · ${Math.round(availableKwh)} of ${
+          summary.battery_capacity_kwh
+        } kWh · ${formatKw(summary.battery_max_kw)} max`}
       />
 
       <Tile
         icon={DollarSign}
         label="Electricity price"
-        stat={formatPrice(summary.electricity_price_per_kwh)}
-        context={priceContext}
+        stat={formatPrice(priceNow)}
+        context={
+          <>
+            {isScrubbed && <PreviewDot />}
+            {priceContext}
+          </>
+        }
       />
 
       <Tile
         icon={Sun}
         label="Solar"
-        stat={formatKw(summary.solar_generation_kw, 1)}
+        stat={formatKw(solarKw, 1)}
         context={`${formatTempF(summary.outdoor_temp_f)} outdoor · ${formatTempF(
           summary.hvac_setpoint_f,
         )} setpoint`}

@@ -52,6 +52,59 @@ export function formatDuration(ms: number | null): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Hour indices                                                                */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Hour-of-day on the *building's* clock, read straight out of the ISO string
+ * rather than through the viewer's timezone.
+ *
+ * `forecast.points[h]` and `plan.impact[h]` are indexed by that hour, so this
+ * is the one that lines up with `viewHour`. Returns null if the string is not
+ * an ISO timestamp.
+ */
+export function hourFromIso(iso: string): number | null {
+  const match = /T(\d{2}):/.exec(iso);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  return Number.isInteger(hour) && hour >= 0 && hour <= 23 ? hour : null;
+}
+
+/** 14 -> "14:00" (for the scrubber, which works in hour indices). */
+export function formatHourIndex(hour: number): string {
+  return `${String(hour).padStart(2, '0')}:00`;
+}
+
+/** 14 -> "2p" (compact scrubber tick). */
+export function formatHourIndexShort(hour: number): string {
+  if (hour === 0) return '12a';
+  if (hour === 12) return '12p';
+  return hour < 12 ? `${hour}a` : `${hour - 12}p`;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Flows                                                                       */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Signed kW, for the one flow that has a direction: 90 -> "+90 kW",
+ * -45 -> "-45 kW", 0 -> "0 kW". Use with `EnergyFlows.battery_kw`, where
+ * positive is discharging into the building.
+ */
+export function formatSignedKw(kw: number, digits = 0): string {
+  const rounded = Number(kw.toFixed(digits));
+  if (rounded === 0) return `0 kW`;
+  return `${rounded > 0 ? '+' : ''}${rounded.toFixed(digits)} kW`;
+}
+
+/** 90 -> "Discharging", -45 -> "Charging", 0 -> "Idle". */
+export function batteryDirection(kw: number): 'Discharging' | 'Charging' | 'Idle' {
+  if (kw > 0) return 'Discharging';
+  if (kw < 0) return 'Charging';
+  return 'Idle';
+}
+
 /** "battery_discharge" -> "Battery discharge" */
 export function humanizeSnake(value: string): string {
   const spaced = value.replace(/_/g, ' ');

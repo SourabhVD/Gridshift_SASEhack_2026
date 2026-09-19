@@ -12,6 +12,7 @@
 import type {
   ActionDecisionResponse,
   ActionPlan,
+  BuildingsResponse,
   DashboardSummary,
   EventsResponse,
   ForecastResponse,
@@ -86,23 +87,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /* Endpoints                                                                   */
 /* -------------------------------------------------------------------------- */
 
-/** GET /api/dashboard/summary */
-export function getSummary(): Promise<DashboardSummary> {
-  return IS_MOCK
-    ? mockServer.getSummary()
-    : request<DashboardSummary>('/api/dashboard/summary');
+/**
+ * Building-scoped endpoints take the site id: a `building_id` query parameter
+ * on GETs, a `building_id` body field on POSTs. Run-scoped endpoints
+ * (`/events`, `/plan`) and action-scoped ones do not -- the run id already
+ * identifies the building.
+ */
+function withBuilding(path: string, buildingId: string): string {
+  return `${path}?building_id=${encodeURIComponent(buildingId)}`;
 }
 
-/** GET /api/forecast */
-export function getForecast(): Promise<ForecastResponse> {
-  return IS_MOCK ? mockServer.getForecast() : request<ForecastResponse>('/api/forecast');
+/** GET /api/buildings -- every site this deployment knows about. */
+export function getBuildings(): Promise<BuildingsResponse> {
+  return IS_MOCK ? mockServer.getBuildings() : request<BuildingsResponse>('/api/buildings');
 }
 
-/** POST /api/gridshift/run */
-export function startRun(): Promise<RunResponse> {
+/** GET /api/dashboard/summary?building_id= */
+export function getSummary(buildingId: string): Promise<DashboardSummary> {
   return IS_MOCK
-    ? mockServer.startRun()
-    : request<RunResponse>('/api/gridshift/run', { method: 'POST' });
+    ? mockServer.getSummary(buildingId)
+    : request<DashboardSummary>(withBuilding('/api/dashboard/summary', buildingId));
+}
+
+/** GET /api/forecast?building_id= */
+export function getForecast(buildingId: string): Promise<ForecastResponse> {
+  return IS_MOCK
+    ? mockServer.getForecast(buildingId)
+    : request<ForecastResponse>(withBuilding('/api/forecast', buildingId));
+}
+
+/** POST /api/gridshift/run -- body: { building_id } */
+export function startRun(buildingId: string): Promise<RunResponse> {
+  return IS_MOCK
+    ? mockServer.startRun(buildingId)
+    : request<RunResponse>('/api/gridshift/run', {
+        method: 'POST',
+        body: JSON.stringify({ building_id: buildingId }),
+      });
 }
 
 /** GET /api/gridshift/{run_id}/events -- cumulative, poll until is_complete. */
@@ -139,14 +160,18 @@ export function rejectAction(actionId: string): Promise<ActionDecisionResponse> 
       );
 }
 
-/** POST /api/demo/reset */
-export function resetDemo(): Promise<ResetResponse> {
+/** POST /api/demo/reset -- body: { building_id }. Resets only that building. */
+export function resetDemo(buildingId: string): Promise<ResetResponse> {
   return IS_MOCK
-    ? mockServer.resetDemo()
-    : request<ResetResponse>('/api/demo/reset', { method: 'POST' });
+    ? mockServer.resetDemo(buildingId)
+    : request<ResetResponse>('/api/demo/reset', {
+        method: 'POST',
+        body: JSON.stringify({ building_id: buildingId }),
+      });
 }
 
 export const api = {
+  getBuildings,
   getSummary,
   getForecast,
   startRun,
