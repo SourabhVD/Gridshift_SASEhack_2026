@@ -1,8 +1,0 @@
-metric,value
-baseline_peak_kw,153.54646244357
-optimized_peak_kw,109.54646244357
-baseline_cost_usd,267.3470650911633
-optimized_cost_usd,166.36844997761477
-savings_energy_usd,0.0
-savings_demand_usd,100.9786
-savings_total_usd,100.9786
