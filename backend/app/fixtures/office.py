@@ -42,6 +42,7 @@ from .generator import (
     iso_hour,
     next_day_iso,
     energy_phrase,
+    number_word,
     round1,
     solver_label,
     with_hours,
@@ -214,14 +215,8 @@ def _join(parts: list[str]) -> str:
 
 
 #: Small counts read as words in a sentence, the way the rest of the prose does.
-_NUMBER_WORDS = [
-    "no", "one", "two", "three", "four", "five", "six",
-    "seven", "eight", "nine", "ten", "eleven", "twelve",
-]
-
-
-def _count(value: int) -> str:
-    return _NUMBER_WORDS[value] if 0 <= value < len(_NUMBER_WORDS) else str(value)
+#: The shared table lives in generator.py now; the other three sites count too.
+_count = number_word
 
 
 def _an(text: str) -> str:
@@ -849,8 +844,8 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             tool="save_action_plan",
             invoke="save_action_plan",
             message=(
-                f"Committing a three-action plan: {_battery_clause(r)}, "
-                f"{_ev_clause(r)}, and {_hvac_clause(r)}."
+                f"Committing {_an(_count(r.action_rows))} {_count(r.action_rows)}-action "
+                f"plan: {_battery_clause(r)}, {_ev_clause(r)}, and {_hvac_clause(r)}."
             ),
         ),
         Step(
@@ -868,9 +863,10 @@ def build_script(r: "OptimizationResult") -> list[Step]:
                         "the late evening, so it still needs a human. "
                     )
                 )
-                + "Sending all three actions to the facility manager for approval."
+                + f"Sending {'both' if r.action_rows == 2 else 'all ' + _count(r.action_rows)} "
+                "actions to the facility manager for approval."
             ),
-            payload={"requires_approval": True, "action_count": 3},
+            payload={"requires_approval": True, "action_count": r.action_rows},
         ),
         Step(
             type="complete",

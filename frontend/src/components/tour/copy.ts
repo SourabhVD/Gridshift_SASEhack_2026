@@ -63,6 +63,35 @@ export function isDeviceChapter(id: ChapterId): id is DeviceChapter {
 }
 
 /**
+ * Which chapter each agent tool is about.
+ *
+ * Deliberately not `TOOL_NODES` from the scene layout, which answers a
+ * different question: that one maps a tool to the props it lights up in 3D,
+ * so everything without a mesh lands on 'building'. The column has two
+ * chapters with no device at all -- the peak and the plan -- and they are
+ * exactly the ones the interesting tools are about. Reusing the scene's map
+ * left both of them dark for the whole run.
+ */
+export const TOOL_CHAPTERS: Readonly<Record<string, readonly ChapterId[]>> = {
+  get_energy_forecast: ['peak'],
+  get_electricity_prices: ['grid'],
+  get_battery_state: ['battery'],
+  get_ev_requirements: ['ev'],
+  get_hvac_constraints: ['hvac'],
+  run_schedule_optimizer: ['battery', 'ev', 'hvac', 'plan'],
+  validate_schedule: ['battery', 'ev', 'hvac', 'plan'],
+  save_action_plan: ['plan'],
+  request_human_approval: ['plan'],
+};
+
+/** The chapter a plan row asks a human about. */
+export const ACTION_CHAPTERS: Readonly<Record<ActionType, ChapterId>> = {
+  battery_discharge: 'battery',
+  ev_charging_shift: 'ev',
+  hvac_setpoint: 'hvac',
+};
+
+/**
  * Each device chapter's channel colour, as a CSS variable. The tour is where
  * the scene's colours and the dashboard's meet, so it reads the UI hexes -- the
  * lighter stage ramp belongs to emissive materials, not to DOM.

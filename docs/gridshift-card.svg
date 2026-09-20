@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800" font-family="Segoe UI, Inter, Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#0b0b0f"/><stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="pf" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff5a52" stop-opacity="0.30"/><stop offset="1" stop-color="#ff5a52" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="of" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5ae596" stop-opacity="0.26"/><stop offset="1" stop-color="#5ae596" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#bg)"/>
+
+  <rect x="96" y="74" width="92" height="92" rx="20.12" fill="#0c0c11" stroke="#1e1f26" stroke-width="2.16"/><path d="M111.81 102.75 L134.81 102.75" fill="none" stroke="#ffae33" stroke-width="8.05" stroke-linecap="round"/><path d="M134.81 102.75 L134.81 134.38 L172.19 134.38" fill="none" stroke="#5ae596" stroke-width="8.05" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="212" y="130" font-size="66" font-weight="700" letter-spacing="-1.8" fill="#ededef">Grid<tspan fill="#5ae596">Shift</tspan></text>
+  <text x="215" y="166" font-size="17" letter-spacing="5" fill="#6f7079">ENERGY COMMAND CENTER</text>
+
+  <text x="96" y="252" font-size="32" fill="#c9cad1">An agent that moves a building off its own peak —</text>
+  <text x="96" y="298" font-size="32" fill="#c9cad1">and asks a human before it touches anything.</text>
+
+  <text x="96" y="392" font-size="50" font-weight="700" fill="#ff5a52">522</text>
+  <text x="185" y="392" font-size="29" fill="#6f7079">kW</text>
+  <text x="240" y="392" font-size="38" fill="#6f7079">→</text>
+  <text x="296" y="392" font-size="50" font-weight="700" fill="#5ae596">360</text>
+  <text x="385" y="392" font-size="29" fill="#6f7079">kW</text>
+  <text x="458" y="392" font-size="23" fill="#6f7079">billing peak · a 31% cut</text>
+  <text x="1104" y="370" text-anchor="end" font-size="38" font-weight="700" fill="#ededef">$1,374</text>
+  <text x="1104" y="398" text-anchor="end" font-size="19" fill="#6f7079">avoided demand charge / month</text>
+
+  <line x1="96" y1="498.4" x2="1104" y2="498.4" stroke="#4a3b2e" stroke-width="1.5" stroke-dasharray="7 7"/>
+  <text x="96" y="487.4" font-size="16" fill="#8a7358">450 kW threshold</text>
+
+  <path d="M96.0 688 L96.0 625.9 L139.8 628.9 L183.7 630.8 L227.5 632.9 L271.3 635.2 L315.1 636.8 L359.0 640.3 L402.8 632.7 L446.6 596.5 L490.4 515.8 L534.3 483.4 L578.1 468.6 L621.9 468.5 L665.7 468.0 L709.6 486.6 L753.4 533.4 L797.2 584.2 L841.0 606.8 L884.9 605.1 L928.7 613.1 L972.5 622.1 L1016.3 620.4 L1060.2 622.3 L1104.0 623.8 L1104.0 688 Z" fill="url(#pf)"/>
+  <path d="M96.0 625.9 L139.8 628.9 L183.7 630.8 L227.5 632.9 L271.3 635.2 L315.1 636.8 L359.0 640.3 L402.8 632.7 L446.6 596.5 L490.4 515.8 L534.3 483.4 L578.1 468.6 L621.9 468.5 L665.7 468.0 L709.6 486.6 L753.4 533.4 L797.2 584.2 L841.0 606.8 L884.9 605.1 L928.7 613.1 L972.5 622.1 L1016.3 620.4 L1060.2 622.3 L1104.0 623.8" fill="none" stroke="#ff5a52" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M96.0 688 L96.0 625.9 L139.8 628.9 L183.7 630.8 L227.5 593.0 L271.3 635.2 L315.1 636.8 L359.0 640.3 L402.8 632.7 L446.6 596.5 L490.4 536.1 L534.3 536.1 L578.1 536.1 L621.9 536.1 L665.7 536.1 L709.6 536.1 L753.4 536.1 L797.2 561.2 L841.0 577.7 L884.9 576.0 L928.7 584.0 L972.5 536.1 L1016.3 591.4 L1060.2 541.7 L1104.0 623.8 L1104.0 688 Z" fill="url(#of)"/>
+  <path d="M96.0 625.9 L139.8 628.9 L183.7 630.8 L227.5 593.0 L271.3 635.2 L315.1 636.8 L359.0 640.3 L402.8 632.7 L446.6 596.5 L490.4 536.1 L534.3 536.1 L578.1 536.1 L621.9 536.1 L665.7 536.1 L709.6 536.1 L753.4 536.1 L797.2 561.2 L841.0 577.7 L884.9 576.0 L928.7 584.0 L972.5 536.1 L1016.3 591.4 L1060.2 541.7 L1104.0 623.8" fill="none" stroke="#5ae596" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round"/>
+  <circle cx="665.7" cy="468.0" r="6" fill="#ff5a52"/>
+  <circle cx="665.7" cy="468.0" r="13" fill="none" stroke="#ff5a52" stroke-opacity="0.35" stroke-width="2"/>
+
+  <line x1="96" y1="688" x2="1104" y2="688" stroke="#23242b" stroke-width="1.5"/>
+  <text x="96" y="717" font-size="16" fill="#55565e">00:00</text>
+  <text x="621.9" y="717" font-size="16" fill="#55565e" text-anchor="middle">12:00</text>
+  <text x="1104" y="717" font-size="16" fill="#55565e" text-anchor="end">23:00</text>
+
+  <rect x="96" y="742" width="24" height="4" rx="2" fill="#ff5a52"/>
+  <text x="132" y="750" font-size="18" fill="#9a9ba3">forecast</text>
+  <rect x="228" y="742" width="24" height="4" rx="2" fill="#5ae596"/>
+  <text x="264" y="750" font-size="18" fill="#9a9ba3">optimized</text>
+  <text x="1104" y="750" text-anchor="end" font-size="18" fill="#55565e">real metered day · 2018-08-09 · LightGBM · battery + EV + HVAC under one MIP</text>
+</svg>

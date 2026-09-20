@@ -446,8 +446,15 @@ function PortfolioKpis() {
         context={`${formatHourIndex(peak.hour)} · summed across the campus`}
       />
 
+      {/* This counts the sites over cap AT THE VIEWED HOUR, while the peak
+          alert underneath counts the sites that go over at any point in the
+          day. Both are true and they are rarely the same number -- 1 here
+          against 4 there, on the same screen -- so each has to say which
+          question it is answering. Unlabelled, the pair reads as a bug, and
+          the empty state read worse: "every site under its threshold" sitting
+          directly above "4 of 4 sites exceed their cap today". */}
       <Cell
-        label="Sites over cap"
+        label={isScrubbed ? `Over cap at ${formatHourIndex(viewHour)}` : 'Sites over cap now'}
         value={String(overNow)}
         unit={`of ${buildings.length}`}
         valueClassName={overNow > 0 ? 'text-alert' : 'text-good'}
@@ -458,7 +465,7 @@ function PortfolioKpis() {
               ? now.sites_over_cap
                   .map((id) => buildings.find((b) => b.id === id)?.name ?? id)
                   .join(', ')
-              : 'every site under its threshold'}
+              : `all ${buildings.length} under threshold at ${formatHourIndex(viewHour)}`}
           </>
         }
       />

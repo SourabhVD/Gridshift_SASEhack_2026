@@ -1,5 +1,78 @@
+# The demo stack, detached from any terminal.
+#
+#   docker compose up -d --build     # build and start
+#   docker compose logs -f           # watch
+#   docker compose down              # stop
+#
+# Then open http://localhost:3000.
+#
+# `restart: unless-stopped` means these survive the shell that started them, a
+# closed laptop lid, and a reboot once Docker Desktop is up again. That is the
+# point: a demo should not depend on a terminal window nobody is allowed to
+# close.
+#
+# The Gemini key is never in this file or in an image layer. Compose reads the
+# repository-root .env for the substitution below, so GEMINI_API_KEY=... there
+# reaches the container at run time and nowhere else. With no key the backend
+# falls back to the scripted agent, which needs no network at all.
+
 services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: gridshift-backend
+    ports:
+      # 8001 on the host, because that is what frontend/.env.local already
+      # points at for `next dev`.
+      - "8001:8000"
+    environment:
+      # `gemini` for the live agent, `fake` for the scripted stream. Fake needs
+      # no key and no network, runs in about 17 s against the live agent's 80,
+      # and produces the identical plan -- the optimizer decides it either way,
+      # the agent only narrates it. Worth having as the rehearsed fallback.
+      GRIDSHIFT_AGENT: ${GRIDSHIFT_AGENT:-gemini}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.6-flash}
+      # backtest serves the real metered day from the mounted artifacts;
+      # fixtures serves the authored curves and needs no mount.
+      GRIDSHIFT_FORECAST: ${GRIDSHIFT_FORECAST:-backtest}
+      GRIDSHIFT_BACKTEST_PATH: /data/backtests
+      GRIDSHIFT_OPTIMIZER: ${GRIDSHIFT_OPTIMIZER:-engine}
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    volumes:
+      # Read-only, and the only data that crosses the boundary. The backend
+      # never opens a database connection: the harness writes these files
+      # offline and this reads them.
+      - ./data/processed/backtests:/data/backtests:ro
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        # Inlined at BUILD time and used by the viewer's browser, so it has to
+        # be the published host port -- not http://backend:8000, which nothing
+        # outside the compose network can resolve. Change it here and rebuild;
+        # it cannot be set at run time.
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8001}
+        NEXT_PUBLIC_USE_MOCK: ${NEXT_PUBLIC_USE_MOCK:-partial}
+    image: gridshift-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+  # Local Postgres for the optimizer's database path (optimizer/data_access.py
+  # and optimizer/db/devices.sql). Nothing in the demo needs it -- the running
+  # product reads files, not a database -- so it sits behind a profile and
+  # stays down unless it is asked for:
+  #
+  #   docker compose --profile db up -d postgres
   postgres:
+    profiles: ["db"]
     image: postgres:16
     environment:
       POSTGRES_DB: gridshift

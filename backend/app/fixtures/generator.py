@@ -410,6 +410,18 @@ def _assert_one(flows: dict[str, float], where: str) -> None:
         )
 
 
+#: "no hours" reads better than "zero hours", which is why 0 is a word too.
+_NUMBER_WORDS = (
+    "no", "one", "two", "three", "four", "five", "six",
+    "seven", "eight", "nine", "ten", "eleven", "twelve",
+)
+
+
+def number_word(value: int) -> str:
+    """'two' rather than '2'. Prose counts small things in words."""
+    return _NUMBER_WORDS[value] if 0 <= value < len(_NUMBER_WORDS) else str(value)
+
+
 def energy_phrase(savings_usd: float, noun: str = "Day-ahead energy cost") -> str:
     """
     "Day-ahead energy cost falls $23.13" / "...rises $13.34".

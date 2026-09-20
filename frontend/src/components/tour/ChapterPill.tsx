@@ -58,8 +58,8 @@ export interface ChapterPillProps {
   expanded: boolean;
   /** Show the channel dot: the scene is hovering or holding this device. */
   marked: boolean;
-  /** Soft pulsing ring: the agent's current tool is about this device. */
-  pulsing: boolean;
+  /** How much attention this chip is asking for. */
+  emphasis: PillEmphasis;
   ctx: ChapterCtx;
   onToggle: (id: ChapterId) => void;
   /** -1 / +1 from the chevrons. */
@@ -68,6 +68,22 @@ export interface ChapterPillProps {
   registerHeader: (el: HTMLButtonElement | null) => void;
 }
 
+/**
+ * How loudly a chip is speaking.
+ *
+ *   none     nothing to say.
+ *   ambient  a run is going and this chip is not what the agent is on. Dim,
+ *            steady, and the reason the column no longer looks frozen for the
+ *            eighty seconds a live run takes between tool calls.
+ *   active   the agent's current tool is about this chip. The channel colour,
+ *            breathing.
+ *   pending  the plan is waiting on a human and this chip is part of what it
+ *            asks for. Accent, and deliberately not the channel colour: the
+ *            whole column turning one colour reads as "a decision is waiting"
+ *            in a way five different colours do not.
+ */
+export type PillEmphasis = 'none' | 'ambient' | 'active' | 'pending';
+
 export function ChapterPill({
   id,
   title,
@@ -75,7 +91,7 @@ export function ChapterPill({
   count,
   expanded,
   marked,
-  pulsing,
+  emphasis,
   ctx,
   onToggle,
   onStep,
@@ -157,16 +173,27 @@ export function ChapterPill({
         onMouseEnter={() => onHover(id)}
         onMouseLeave={() => onHover(null)}
       >
-        {pulsing && (
+        {emphasis !== 'none' && (
           <span
             aria-hidden="true"
+            data-emphasis={emphasis}
             className={clsx(
-              'gs-chapter-pulse pointer-events-none absolute inset-0',
+              'pointer-events-none absolute inset-0',
+              'transition-opacity duration-[var(--dur)] ease-[var(--ease)]',
               expanded ? 'rounded-[24px]' : 'rounded-full',
+              emphasis === 'active' && 'gs-chapter-pulse',
+              emphasis === 'ambient' && 'opacity-25',
             )}
-            style={{ boxShadow: `0 0 0 3px ${ring}` }}
+            style={{
+              boxShadow: `0 0 0 ${emphasis === 'ambient' ? 2 : 3}px ${
+                emphasis === 'pending' ? 'var(--color-accent)' : ring
+              }`,
+            }}
           />
         )}
+        {/* The ring above is decoration. This is the same fact for anyone who
+            cannot see it, and only for the state that asks for something. */}
+        {emphasis === 'pending' && <span className="sr-only">Awaiting your approval.</span>}
 
         <button
           ref={registerHeader}
