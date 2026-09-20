@@ -51,6 +51,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from .forecast import baseline_for_optimizer
 from ..fixtures.generator import (
     DEMAND_CHARGE_USD_PER_KW,
     HOURS,
@@ -381,19 +382,22 @@ def _assemble(
     elapsed_ms: int,
     solve_time_ms: int,
     status: str = "OPTIMAL",
+    soc: list[float] | None = None,
 ) -> OptimizationResult:
     """
     Price a dispatch and package it, whatever produced it.
 
-    Both the heuristic and the CP-SAT solver come through here, so the two can
-    never disagree about how a schedule is costed or which fields the plan
-    reads. The optimized curve is re-derived from the components through the
+    The heuristic, the CP-SAT solver and Minh's engine all come through here,
+    so no two of them can disagree about how a schedule is costed or which
+    fields the plan reads. State of charge is walked from the dispatch unless
+    the caller hands one in: a solver that priced round-trip losses knows a SOC
+    this walk cannot reproduce, because the walk sees only what crosses the
+    inverter and not what reaches the cells. The optimized curve is re-derived from the components through the
     flow identity rather than being reported separately, so an action's stated
     kW really is what moves the line.
     """
     threshold = fixture.peak_threshold_kw
-    baseline = fixture.baseline_parts
-    baseline_grid = list(fixture.baseline_grid)
+    baseline_grid, baseline = baseline_for_optimizer(fixture)
     capacity_kwh = float(fixture.building["battery_capacity_kwh"])
     battery_facts = fixture.tool_facts.get("get_battery_state", {})
 
@@ -412,7 +416,7 @@ def _assemble(
         hvac=hvac,
         solar=list(baseline.solar),
         battery=battery,
-        soc=soc_walk(battery, start_soc, capacity_kwh),
+        soc=list(soc) if soc is not None else soc_walk(battery, start_soc, capacity_kwh),
     )
     optimized_grid = grid_from_components(optimized)
 
@@ -476,8 +480,7 @@ def optimize(fixture: "BuildingFixture") -> OptimizationResult:
     started = time.perf_counter()
 
     threshold = fixture.peak_threshold_kw
-    baseline = fixture.baseline_parts
-    baseline_grid = list(fixture.baseline_grid)
+    baseline_grid, baseline = baseline_for_optimizer(fixture)
     policy = fixture.policy
 
     battery_facts = fixture.tool_facts.get("get_battery_state", {})
@@ -599,8 +602,7 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
     started = time.perf_counter()
 
     threshold = fixture.peak_threshold_kw
-    baseline = fixture.baseline_parts
-    baseline_grid = list(fixture.baseline_grid)
+    baseline_grid, baseline = baseline_for_optimizer(fixture)
 
     battery_facts = fixture.tool_facts.get("get_battery_state", {})
     ev_facts = fixture.tool_facts.get("get_ev_requirements", {})

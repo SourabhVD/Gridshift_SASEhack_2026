@@ -29,6 +29,7 @@ from app.fixtures import get_fixture
 from app.fixtures.generator import NOW_HOUR
 from app.services import backtest as backtest_reader
 from app.services import forecast as forecast_service
+from app.services.optimizer import solve
 from .conftest import poll_until_complete
 
 OFFICE = "sea-office-001"
@@ -463,3 +464,73 @@ def test_health_reports_which_day_is_on_screen(backtest_mode, client: TestClient
     assert body["backtest"]["available"] == [DATE]
     assert body["backtest"]["building"] == OFFICE
     assert body["backtest"]["requested_date"] == "latest"
+
+# --------------------------------------------------------------------------- #
+# One day, everywhere                                                          #
+# --------------------------------------------------------------------------- #
+
+
+def test_the_optimizer_plans_against_the_day_on_the_chart(backtest_mode) -> None:
+    """
+    The forecast chart and the plan have to be the same day.
+
+    For a while they were not. `current_curve` fed /api/forecast and
+    /api/dashboard/summary, while the optimizer read `fixture.baseline_grid`
+    straight off the authored fixture. The dashboard drew the backtested day --
+    peaking at 13:00 with a deep morning trough -- and the plan underneath it
+    solved the September fixture, which peaks at 15:00 and never drops below
+    172 kW. Both reported the same 522 kW headline, because the backtest is
+    scaled onto the site's own peak, so nothing looked wrong until you put the
+    two charts side by side and found they disagreed about what time the peak
+    was.
+    """
+    from app.services.forecast import baseline_for_optimizer, current_curve
+
+    fixture = get_fixture(OFFICE)
+    curve = current_curve(fixture)
+    assert curve.source == "backtest", "the fixture did not switch mode"
+
+    grid, parts = baseline_for_optimizer(fixture)
+    assert grid == curve.grid
+    assert parts.ev == curve.parts.ev, "the levers must survive the switch unchanged"
+
+    result = solve(fixture)
+    assert result.baseline_grid == curve.grid
+    assert result.baseline_peak_hour == curve.grid.index(max(curve.grid))
+    assert result.baseline_peak_kw == max(curve.grid)
+    # And the fixture's own day is genuinely a different one, or this proves
+    # nothing at all.
+    assert list(fixture.baseline_grid) != curve.grid
+
+
+def test_the_plan_is_a_net_win_even_when_the_energy_line_is_not(backtest_mode) -> None:
+    """
+    Flattening a peak is not always cheap, and the plan is allowed to say so.
+
+    This tariff prices 14:00-20:00 on-peak, and a real metered day can put its
+    peak in the cheap hours instead. Moving load out of it then moves it into
+    the expensive ones and the day-ahead energy line goes up. What must never
+    happen is the whole trade going the wrong way: the demand charge is the
+    reason the plan exists, so peak reduction has to pay for whatever energy
+    it costs, several times over.
+    """
+    result = solve(get_fixture(OFFICE))
+    assert result.peak_reduction_kw > 0
+    monthly = result.savings_usd * 30 + result.demand_charge_avoided_usd
+    assert monthly > 0, (
+        f"plan loses ${-monthly:.2f}/month: energy ${result.savings_usd:.2f}/day "
+        f"against ${result.demand_charge_avoided_usd:.2f} of demand charge"
+    )
+
+
+def test_the_narration_does_not_print_a_negative_saving_as_a_fall(backtest_mode) -> None:
+    """
+    A plan whose energy line goes up says "rises", not "falls $-13.34".
+
+    The summary is what a judge reads off the screen, and the one day in the
+    repo with real metered data is exactly the day that trips this.
+    """
+    fixture = get_fixture(OFFICE)
+    summary = fixture.plan_summary(solve(fixture))
+    assert "$-" not in summary, summary
+    assert "falls $-" not in summary

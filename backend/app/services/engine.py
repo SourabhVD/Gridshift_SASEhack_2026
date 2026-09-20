@@ -48,13 +48,13 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from ..config import REPO_ROOT
+from .forecast import baseline_for_optimizer
 from ..fixtures.generator import (
     DEMAND_CHARGE_USD_PER_KW,
     HOURS,
     PRICE_PER_KWH,
     FlowComponents,
     round1,
-    soc_walk,
 )
 from .optimizer import OptimizationResult, _assemble
 
@@ -70,6 +70,16 @@ SOLVE_TIME_LIMIT_S = 20.0
 #: the spec default, because the conversion between delivered energy and
 #: metered draw depends on it and a silent change would unbalance every site.
 EV_CHARGE_EFFICIENCY = 0.92
+
+#: Round-trip efficiency of the site battery, stated here for the same reason.
+#: The engine plans against these, so the state of charge we publish has to be
+#: walked with them too: a pack that stores only 95% of what it draws and gives
+#: back 95% of what it takes out does not return to 100% on a charge sized for
+#: the losses. Walk it losslessly instead and the office reads 100.9% at
+#: midday and 25% at midnight on a schedule the engine built to end where it
+#: started.
+BATTERY_CHARGE_EFFICIENCY = 0.95
+BATTERY_DISCHARGE_EFFICIENCY = 0.95
 
 
 def _ensure_importable() -> None:
@@ -117,7 +127,7 @@ def _request_for(fixture: "BuildingFixture") -> Any:
         TariffSchedule,
     )
 
-    baseline = fixture.baseline_parts
+    baseline_grid, baseline = baseline_for_optimizer(fixture)
     battery_facts = fixture.tool_facts.get("get_battery_state", {})
     ev_facts = fixture.tool_facts.get("get_ev_requirements", {})
     hvac_facts = fixture.tool_facts.get("get_hvac_constraints", {})
@@ -132,7 +142,7 @@ def _request_for(fixture: "BuildingFixture") -> Any:
     # through the flow identity rather than taken from the engine's net. What
     # it costs is that the engine cannot see the midday export when deciding
     # when to charge, which does not move an evening peak.
-    raw = [fixture.baseline_grid[h] - baseline.ev[h] for h in range(HOURS)]
+    raw = [baseline_grid[h] - baseline.ev[h] for h in range(HOURS)]
     clipped = [h for h, kw in enumerate(raw) if kw < 0]
     if clipped:
         log.info(
@@ -161,6 +171,8 @@ def _request_for(fixture: "BuildingFixture") -> Any:
         max_charge_kw=float(fixture.building["battery_max_kw"]),
         max_discharge_kw=float(battery_facts.get("max_discharge_kw") or fixture.building["battery_max_kw"]),
         min_soc_pct=float(battery_facts.get("reserve_floor_pct", 10.0)),
+        charge_efficiency=BATTERY_CHARGE_EFFICIENCY,
+        discharge_efficiency=BATTERY_DISCHARGE_EFFICIENCY,
         initial_soc_pct=start_soc,
         # End where it started. Without this the engine discovers that
         # discharging always helps and simply drains the pack, booking a
@@ -256,7 +268,9 @@ def solve_with_engine(fixture: "BuildingFixture") -> OptimizationResult:
     from optimizer.optimizer import optimize as engine_optimize  # noqa: PLC0415
 
     started = time.perf_counter()
-    baseline = fixture.baseline_parts
+    # Same source as _request_for, or the residual fold and the HVAC clamp
+    # below would be measured against a different day than the one solved.
+    _, baseline = baseline_for_optimizer(fixture)
     request = _request_for(fixture)
     result = engine_optimize(request)
     schedule = result.schedule
@@ -268,6 +282,14 @@ def solve_with_engine(fixture: "BuildingFixture") -> OptimizationResult:
 
     charge = column("battery_charge_kw")
     discharge = column("battery_discharge_kw")
+    # The engine solves SOC as a variable, bounded by the reserve floor and
+    # 100%, so its own series is the one to publish. Walking it back out of the
+    # dispatch cannot reproduce it: the walk sees metered kW at the inverter,
+    # and with 95% each way the cells store less than a charge draws and give
+    # up more than a discharge delivers. Re-walking put the office at 100.9% at
+    # midday, under its 20% floor at 18:00, and 57 points adrift by midnight on
+    # a schedule the engine had built to end exactly where it started.
+    soc = column("battery_soc_pct") if "battery_soc_pct" in schedule else None
     ev_draw = column("ev_charge_kw")
     curtail = column("hvac_curtail_kw")
     rebound = column("hvac_rebound_kw")
@@ -317,8 +339,14 @@ def solve_with_engine(fixture: "BuildingFixture") -> OptimizationResult:
         hvac_drift_hours_declared=None,
         derived=True,
         elapsed_ms=int((time.perf_counter() - started) * 1000),
-        solve_time_ms=int(float(result.solver.get("wall_time_s", 0.0)) * 1000),
+        # The engine reports milliseconds under `wall_time_ms`. Reading a
+        # `wall_time_s` key that does not exist made every plan claim a 0 ms
+        # solve, which the scripted agent duly read out as "in 0.0 s". Fall
+        # back to the wall time measured here rather than to zero.
+        solve_time_ms=int(result.solver.get("wall_time_ms", 0))
+        or int((time.perf_counter() - started) * 1000),
         status=str(result.status),
+        soc=soc,
     )
 
     # Cross-check: our identity-derived curve against the engine's own net.
@@ -344,16 +372,6 @@ def solve_with_engine(fixture: "BuildingFixture") -> OptimizationResult:
         )
 
     return assembled
-
-
-def soc_for(fixture: "BuildingFixture", battery: list[float]) -> list[float]:
-    """State-of-charge walk for a dispatch, in the fixture's own terms."""
-    capacity = float(fixture.building["battery_capacity_kwh"])
-    baseline = fixture.baseline_parts
-    start = round1(
-        baseline.soc[0] + (baseline.battery[0] / capacity) * 100 if baseline.soc else 0.0
-    )
-    return soc_walk(battery, start, capacity)
 
 
 __all__ = ["solve_with_engine", "FlowComponents"]

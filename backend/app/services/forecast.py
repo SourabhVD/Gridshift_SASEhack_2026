@@ -325,6 +325,30 @@ def current_curve(fixture: BuildingFixture) -> Curve:
     return _fixture_curve(fixture, list(fixture.baseline_grid), "fixtures")
 
 
+def baseline_for_optimizer(
+    fixture: BuildingFixture,
+) -> tuple[list[float], FlowComponents]:
+    """
+    The day the optimizer plans against: whatever the dashboard is showing.
+
+    This has to be the same curve `build_forecast` publishes, and for a while
+    it was not. The chart drew the backtested 2018-08-09 day -- peaking at
+    13:00, with a deep morning trough -- while the plan was still solved
+    against the authored fixture, which peaks at 15:00 and never drops below
+    172 kW. Both said "522 kW", because the backtest is scaled onto the site's
+    own peak, so the headline agreed and nothing looked wrong until you
+    compared the two charts and found they were different days.
+
+    `flows_for_grid` holds the authored EV, HVAC, solar and battery shapes and
+    re-solves base_kw, so switching the optimizer onto this curve changes what
+    the building is doing and leaves every lever, limit and device fact exactly
+    where it was. In `fixtures` mode it returns the fixture, so this is a no-op
+    on the default path and on every test that does not ask for a real day.
+    """
+    curve = current_curve(fixture)
+    return list(curve.grid), curve.parts
+
+
 def predicted_load_kw(fixture: BuildingFixture) -> tuple[list[float], str]:
     """The 24-hour grid curve and the source it came from."""
     curve = current_curve(fixture)

@@ -41,7 +41,9 @@ from .generator import (
     hvac_profile,
     iso_hour,
     next_day_iso,
+    energy_phrase,
     round1,
+    solver_label,
     with_hours,
     zeros,
 )
@@ -146,7 +148,7 @@ TOOL_FACTS: dict[str, dict[str, Any]] = {
     "run_schedule_optimizer": {
         "objective": "minimize_peak_then_cost",
         "resources": ["battery", "ev", "hvac"],
-        "solver": "CP-SAT",
+        "solver": solver_label(),
         "solve_time_ms": 2312,
     },
     "validate_schedule": {
@@ -337,14 +339,13 @@ def _hvac_clause(r: "OptimizationResult") -> str:
 def plan_summary(r: "OptimizationResult") -> str:
     if r.battery_recharge_kwh > 0:
         cost_line = (
-            f"Day-ahead energy cost falls ${r.savings_usd:.2f} once the "
+            f"{energy_phrase(r.savings_usd)} once the "
             f"{r.battery_recharge_kwh:.0f} kWh overnight battery recharge is paid back."
         )
     else:
         cost_line = (
-            f"Day-ahead energy cost falls ${r.savings_usd:.2f}, and the pack's own "
-            "recharge is already inside that figure because it happens within the "
-            "modelled day."
+            f"{energy_phrase(r.savings_usd)}, and the pack's own recharge is already "
+            "inside that figure because it happens within the modelled day."
         )
 
     concerns: list[str] = []
@@ -670,10 +671,17 @@ def _binding_interval_note(r: "OptimizationResult") -> str:
 
 def _validation_note(r: "OptimizationResult") -> str:
     if r.battery_hours:
-        battery_line = (
-            f"The pack ends its discharge at {r.end_soc_pct:.0f}% SOC, above the "
-            f"{r.reserve_floor_pct:.0f}% floor."
+        # "above the floor" stopped being true the day the engine took over:
+        # it runs this pack down to exactly 20%, which is a fact worth saying
+        # out loud rather than papering over, because it is the reason the
+        # plan wants a human.
+        margin = round1(r.end_soc_pct - r.reserve_floor_pct)
+        where = (
+            f"on the {r.reserve_floor_pct:.0f}% floor exactly, with nothing to spare"
+            if margin <= 0.05
+            else f"{margin:g} points above the {r.reserve_floor_pct:.0f}% floor"
         )
+        battery_line = f"The pack ends its discharge at {r.end_soc_pct:.0f}% SOC, {where}."
     else:
         battery_line = "The battery was not dispatched, so the reserve floor is untouched."
 
@@ -813,7 +821,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
                 "objective": "minimize_peak_then_cost",
                 "horizon_hours": 24,
                 "resources": ["battery", "ev", "hvac"],
-                "solver": "CP-SAT",
+                "solver": solver_label(),
             },
             delay_ms=2400,
         ),

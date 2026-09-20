@@ -39,7 +39,9 @@ from .generator import (
     metered_actuals,
     next_day_iso,
     piecewise,
+    energy_phrase,
     round1,
+    solver_label,
     solar_bell,
     with_hours,
     zeros,
@@ -164,7 +166,7 @@ TOOL_FACTS: dict[str, dict[str, Any]] = {
         "objective": "minimize_peak_then_cost",
         "resources": ["battery", "ev", "hvac"],
         "locked_zones": 16,
-        "solver": "CP-SAT",
+        "solver": solver_label(),
         "solve_time_ms": 3104,
         "unconstrained_battery_kw": 110,
     },
@@ -386,8 +388,8 @@ def plan_summary(r: "OptimizationResult") -> str:
     parts.append(
         f"Together the peak falls from {_num(r.baseline_peak_kw)} kW to "
         f"{_num(r.optimized_peak_kw)} kW, a {_num(r.peak_reduction_kw)} kW cut worth about "
-        f"${r.demand_charge_avoided_usd:.2f} on the demand charge, with "
-        f"${r.savings_usd:.2f} of day-ahead energy saved on top."
+        f"${r.demand_charge_avoided_usd:.2f} on the demand charge, and "
+        f"{energy_phrase(r.savings_usd, 'the day-ahead energy bill')} alongside it."
     )
 
     if r.battery_hours and floor_margin <= 2:
@@ -398,12 +400,25 @@ def plan_summary(r: "OptimizationResult") -> str:
             "not be without a human agreeing to it first."
         )
     elif r.battery_hours:
+        # Whether a second approver is needed depends on whether the optimizer
+        # actually took the HVAC lever. It usually does not -- with the pack
+        # and the bays holding the ceiling there is no peak left for setpoint
+        # drift to buy -- and claiming "the HVAC action touches occupied space"
+        # in a plan that moves no setpoint is both wrong and the sort of wrong
+        # a clinician would catch immediately.
+        approver_line = (
+            "the HVAC action still touches occupied space, which is why this plan "
+            "needs two people to agree to it"
+            if r.hvac_delta_kw
+            else "and no setpoint moves in this plan either, clinical or otherwise, so "
+            "nothing here reaches a patient -- it still goes to a human because of the "
+            "size of the overnight charge, not because of what it asks of the wards"
+        )
         parts.append(
             f"The battery comes off its run at {_num(r.end_soc_pct)}% SOC, "
             f"{_num(floor_margin)} {_points(floor_margin)} clear of the "
             f"{_num(r.reserve_floor_pct)}% critical-care floor, so the ride-through is "
-            "never drawn into; the HVAC action still touches occupied space, which is why "
-            "this plan needs two people to agree to it."
+            f"never drawn into; {approver_line}."
         )
     return " ".join(parts)
 
@@ -822,7 +837,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
                 "horizon_hours": 24,
                 "resources": ["battery", "ev", "hvac"],
                 "locked_zones": 16,
-                "solver": "CP-SAT",
+                "solver": solver_label(),
             },
             delay_ms=2400,
         ),

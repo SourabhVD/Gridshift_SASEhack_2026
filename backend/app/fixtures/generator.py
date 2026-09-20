@@ -410,16 +410,65 @@ def _assert_one(flows: dict[str, float], where: str) -> None:
         )
 
 
-def soc_walk(battery: Sequence[float], start_pct: float, capacity_kwh: float) -> list[float]:
+def energy_phrase(savings_usd: float, noun: str = "Day-ahead energy cost") -> str:
+    """
+    "Day-ahead energy cost falls $23.13" / "...rises $13.34".
+
+    Flattening a peak is not always cheap, and on a real metered day it often
+    is not. 2018-08-09 peaks between 09:00 and 14:00, which this tariff prices
+    off-peak, so the only way to move load out of the peak is to move it into
+    the expensive hours: the office gives up $13.34 of energy to take 162 kW
+    off the billing peak, which is worth $1,373 a month. That is the right
+    trade and the plan makes it on purpose. Printing it as "falls $-13.34" is
+    how a correct plan ends up reading like a broken one.
+    """
+    return f"{noun} {'falls' if savings_usd >= 0 else 'rises'} ${abs(savings_usd):.2f}"
+
+
+def solver_label() -> str:
+    """
+    What the scripted agent should call the solver it just ran.
+
+    The fixtures used to hardcode "CP-SAT" in the payload the agent narrates.
+    That was true while the CP-SAT model was the default and became a false
+    statement in the demo the day Minh's engine took over -- the kind of
+    detail a judge asks about precisely because it is in writing.
+    """
+    from ..config import get_settings  # noqa: PLC0415 - avoids an import cycle
+
+    return {
+        "engine": "MIP (OR-Tools/SCIP)",
+        "cpsat": "CP-SAT",
+        "heuristic": "fixed-order heuristic",
+    }.get(get_settings().optimizer_mode, "MIP (OR-Tools/SCIP)")
+
+
+def soc_walk(
+    battery: Sequence[float],
+    start_pct: float,
+    capacity_kwh: float,
+    *,
+    charge_efficiency: float = 1.0,
+    discharge_efficiency: float = 1.0,
+) -> list[float]:
     """
     State-of-charge walk. Every hour the battery moves battery[h] kW for one
     hour, so SOC changes by -battery[h] / capacity. Positive kW (discharge)
     drains, negative kW (charge) fills.
+
+    `battery` is metered at the inverter, which is not what reaches the cells.
+    A pack with efficiencies below 1 stores only `charge_kw * eta_c` of what it
+    draws and must take `discharge_kw / eta_d` out of itself to deliver a
+    discharge. Both default to 1.0 -- lossless, which is what the heuristic and
+    the CP-SAT model assume -- so pass the real figures when the schedule came
+    from a solver that priced the losses, or the published SOC will climb past
+    100% on charge and bottom out below where the solver put it.
     """
     soc = start_pct
     out: list[float] = []
     for kw in battery:
-        soc = round1(soc - (kw / capacity_kwh) * 100)
+        stored = kw / discharge_efficiency if kw > 0 else kw * charge_efficiency
+        soc = round1(soc - (stored / capacity_kwh) * 100)
         out.append(soc)
     return out
 
