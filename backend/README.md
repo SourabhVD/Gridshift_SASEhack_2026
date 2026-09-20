@@ -103,6 +103,7 @@ memory, so a second worker would answer `/events` for a run it never saw.
 | `GRIDSHIFT_BACKTEST_BUILDING` | `sea-office-001` | The one site the backtest speaks for; every other slug keeps its fixture curve. |
 | `GRIDSHIFT_OPTIMIZER` | `ortools` | `ortools` runs the CP-SAT model; `heuristic` runs the fixed-order three-lever pass the published figures came from. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
+| `GRIDSHIFT_AGENT_THINKING` | `0` | Gemini's internal thinking budget in tokens. `0` is off and several times faster; the prompt already names every tool and its order. `-1` lets the model decide. |
 | `GRIDSHIFT_AGENT_SPEED` | `1.0` | Multiplies every simulated agent delay. `0` finishes a run instantly — the test suite sets this. |
 
 ---

@@ -74,6 +74,12 @@ class Settings:
     #: Multiplies every simulated agent delay. 0 finishes a run immediately.
     agent_speed: float = 1.0
 
+    #: Gemini's internal thinking budget in tokens. 0 turns it off, which is
+    #: the default because the prompt already names every tool and its order,
+    #: so there is no plan left for the model to work out. Raise it if a
+    #: harder task ever needs it. -1 hands the decision back to the model.
+    agent_thinking_budget: int = 0
+
     @property
     def gemini_available(self) -> bool:
         return bool(self.gemini_api_key)
@@ -119,4 +125,5 @@ def get_settings() -> Settings:
         ),
         cors_origins=_csv(os.getenv("CORS_ORIGINS", "http://localhost:3000")),
         agent_speed=float(os.getenv("GRIDSHIFT_AGENT_SPEED", "1.0")),
+        agent_thinking_budget=int(os.getenv("GRIDSHIFT_AGENT_THINKING", "0")),
     )

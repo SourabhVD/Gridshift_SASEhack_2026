@@ -57,10 +57,11 @@ log = logging.getLogger("gridshift.agent")
 #: Hard stop on the Gemini loop so a confused model cannot bill forever.
 MAX_MODEL_TURNS = 16
 
-#: Attempts per model turn, and the first backoff. Doubles each time, so the
-#: worst case is roughly 1 + 2 + 4 + 8 seconds before a turn is given up on.
+#: Attempts per model turn, and the first backoff. Doubles each time. The free
+#: tier's 503s clear almost immediately, so the first retry is quick and the
+#: doubling is there for a real outage rather than a spike.
 MODEL_RETRIES = 5
-MODEL_RETRY_BASE_S = 1.0
+MODEL_RETRY_BASE_S = 0.5
 
 #: HTTP statuses worth another attempt: 503 is the free tier's "experiencing
 #: high demand", 429 is rate limiting, 500 and 504 are Google's own faults.
@@ -87,7 +88,7 @@ flag. Your job is to find out whether the peak is real, work out which loads \
 are genuinely flexible, have the optimizer compute a dispatch schedule, check \
 it, and route it to a human.
 
-Investigate in this order, one tool call at a time:
+Investigate in this order:
 
   1. get_energy_forecast     confirm the peak and how long it lasts
   2. get_electricity_prices  learn whether kW or kWh is the thing to minimise
@@ -99,6 +100,12 @@ Investigate in this order, one tool call at a time:
   7. validate_schedule       confirm zero violations
   8. save_action_plan        persist it
   9. request_human_approval  hand it to the operator, and stop
+
+Steps 1 to 5 are independent reads: none of them needs another's answer, so \
+request all five together in your first turn rather than one at a time. An \
+operator is watching this run happen, and five round trips where one would do \
+is four spent waiting. Steps 6 to 9 each depend on the step before it, so take \
+those one at a time.
 
 Rules you do not break:
 
@@ -325,6 +332,15 @@ async def run_gemini(invoker: ToolInvoker) -> None:
         tools=[tool_config],
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         temperature=0.2,
+        # Internal thinking is the single largest cost in this loop and buys
+        # nothing here: the prompt already names the nine tools, their order
+        # and the rules, so there is no plan for the model to work out. On one
+        # measured call it was 3.29 s with thinking left at its default and
+        # 0.63 s with it off, for the same answer. Multiply by a turn per step
+        # and it is most of the wait an operator sits through.
+        # GRIDSHIFT_AGENT_THINKING raises it again if a harder task ever needs
+        # it; the reasoning the operator reads is output text, not this.
+        thinking_config=types.ThinkingConfig(thinking_budget=settings.agent_thinking_budget),
     )
 
     contents: list[Any] = [
