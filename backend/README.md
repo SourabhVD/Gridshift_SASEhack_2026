@@ -358,7 +358,32 @@ Three things this mode deliberately does **not** do:
   split is still synthesised through `flows_for_grid()`. The per-device numbers
   are the optimizer's output, not the forecaster's.
 
-Known limitation, on two days a year: the harness selects a window of
+### Operating it
+
+**The artifacts are per machine.** `data/processed/` is gitignored, so a
+backtest folder never travels with a clone, a branch or a container image.
+Whoever runs the demo either runs the harness themselves with `DATABASE_URL`
+set, or copies the folder across by hand. Plan for that before the day.
+
+**A verified day is `2018-08-09`**, the highest-peak weekday in the data and
+the one this mode has actually been run against:
+
+| | |
+| --- | ---: |
+| Measured peak | 160.0 kW |
+| Model peak | 149.9 kW |
+| Mean absolute error | 3.36 kW |
+| MAPE | 3.5 % |
+| R² | 0.987 |
+| Peak-hour F1 | 1.00 (6 of 6) |
+
+Serve it and `/health` reports the real kW beside the factor applied. Say the
+peak-hour figure carefully: the model identified every hour that crossed the
+threshold, and its single highest hour lands two hours late. For peak shaving
+that gap matters less than it sounds, because the action window is the whole
+exceedance rather than one interval — but do not round it away on a slide.
+
+**Known limitation, on two days a year:** the harness selects a window of
 `local_start + Timedelta(days=1)`, which is 24 hours of elapsed time rather
 than a calendar day. On a daylight-saving transition that window is not quite
 the local day, and the `utc_offset` reported in `/health` is the one in force
