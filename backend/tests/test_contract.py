@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 import pytest
-from conftest import BUILDING_IDS, poll_until_complete
+from .conftest import BUILDING_IDS, poll_until_complete
 from fastapi.testclient import TestClient
 
 #: ISO 8601 with an explicit offset. A naive timestamp is read as browser-local

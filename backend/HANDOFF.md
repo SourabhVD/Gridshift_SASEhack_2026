@@ -25,7 +25,7 @@ uvicorn app.main:app --reload --port 8000
 
 ```bash
 # macOS / Linux
-cd backend/reference
+cd backend
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
@@ -66,17 +66,17 @@ once `partial` is silent.
 ## 3. Turn on the real agent
 
 1. Create a key at <https://aistudio.google.com/app/apikey>.
-2. `cp .env.example .env` in `backend/reference/`, then set:
+2. `cp .env.example .env` in `backend/`, then set:
    ```
    GEMINI_API_KEY=your-key-here
    GRIDSHIFT_AGENT=gemini
    ```
-   `.env` is gitignored. The key is read only in `app/services/agent.py` and
+   `.env` is gitignored. The key is read only in `app/agent/runner.py` and
    never reaches the browser.
 3. Restart uvicorn, click "Run agent", and check two things in the feed:
    * **Every `tool_call` has a matching `tool_result`** with a payload and a
      `duration_ms`. That pairing is written by `ToolInvoker.invoke` in
-     `app/services/agent.py` and is the one thing you must not break —
+     `app/agent/runner.py` and is the one thing you must not break —
      automatic function calling in the SDK is disabled on purpose, because it
      would run the tools itself and no events would be written.
    * **The numbers in the model's prose match the payloads.** The model
@@ -116,22 +116,28 @@ and falls back to fixture curves. Two caveats:
 
 In order:
 
-1. **Move into `backend/app/`.** File-by-file:
+1. ~~**Move into `backend/app/`.**~~ **Done.** The code now lives at its
+   production paths and the whole suite runs from the repository root, which is
+   what CI invokes. Where things landed, and what is still owed on each:
 
-   | From `backend/reference/` | To `backend/app/` | Notes |
-   | --- | --- | --- |
-   | `app/schemas.py` | `models/schemas.py` | Verbatim. Change with `types/api.ts`, same commit. |
-   | `app/api/routes.py` | `api/routes.py` | Keep routes logic-free. |
-   | `app/services/agent.py` | `agent/runner.py` | Keep `ToolInvoker.invoke` intact. |
-   | `app/services/tools.py` | `agent/tools.py` | Swap fixture lookups for repositories. |
-   | `app/services/optimizer.py` | `optimizer/` | Keep `OptimizationResult` as the interface. |
-   | `app/services/forecast.py` | `services/forecast.py` | Keep `flows_for_grid()` and the fallback. |
-   | `app/store.py` | `models/` + repositories | Table shapes carry over; the driver does not. |
-   | `app/config.py` | `config.py` | Add `DATABASE_URL` and auth settings. |
-   | `app/fixtures/` | `tests/fixtures/` | Except `assert_flows_identity`, which stays in production code. |
+   | Now at | Still owed |
+   | --- | --- |
+   | `app/models/schemas.py` | Nothing. Keep pinned to `types/api.ts`; change both in the same commit. |
+   | `app/api/routes.py` | Nothing. Keep routes logic-free. |
+   | `app/agent/runner.py` | Keep `ToolInvoker.invoke` intact when the store changes. |
+   | `app/agent/tools.py` | Swap fixture lookups for repository calls. |
+   | `app/services/optimizer.py` | Replace the heuristic with CP-SAT; keep `OptimizationResult` as the interface. |
+   | `app/services/forecast.py` | Keep `flows_for_grid()` and the fallback when the ml path becomes the default. |
+   | `app/store.py` | Replace SQLite with repositories over Postgres. Table shapes carry over; the driver does not. |
+   | `app/config.py` | Add `DATABASE_URL` and auth settings. |
+   | `app/fixtures/` | Moves to `tests/fixtures/` once real data replaces it — except `assert_flows_identity`, which stays in production code. It is still imported by `app/` today, so it cannot move yet. |
 
-2. **Postgres.** Use `data/scripts/db/schema.sql` (on `feature/data-ingestion-db`)
-   as the base, then add:
+2. **Postgres.** Two shapes are on the table and they change only where the
+   repository layer points, not the wire format. If the database is hosted and
+   reached over a teammate's HTTP API, the repositories call that API and the
+   SQL below is that service's problem rather than this one's; keep the same
+   function boundary either way so the swap stays local. If this backend owns
+   the database directly, use `data/scripts/db/schema.sql` as the base and add:
 
    ```sql
    -- nameplate the dashboard reads on every building; the schema has nowhere
@@ -247,11 +253,11 @@ In order:
 ## 7. Where to ask
 
 * **`frontend/src/types/api.ts`** is the source of truth for every payload.
-  `app/schemas.py` mirrors it one for one; if they disagree, the TypeScript is
+  `app/models/schemas.py` mirrors it one for one; if they disagree, the TypeScript is
   right until the team agrees otherwise, and both change in the same commit.
-* **`docs/api-contracts.md`** is the shared contract doc and is still a set of
-  placeholders — fill it from `app/schemas.py` and the OpenAPI page at
-  `http://localhost:8000/docs` once the endpoints settle.
+* **`docs/api-contracts.md`** is the shared contract doc and is now written out
+  in full. Keep it in step with `app/models/schemas.py` and the OpenAPI page at
+  `http://localhost:8000/docs`.
 * **`frontend/README.md`** documents the four buildings, the sign convention
-  and the numbers the reference reproduces.
-* `pytest` in `backend/reference/` is the executable version of section 6.
+  and the numbers this backend reproduces.
+* `python -m pytest` from the repository root is the executable version of section 6.

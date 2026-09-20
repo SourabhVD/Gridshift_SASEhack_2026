@@ -8,7 +8,7 @@ depends on.
 
 from __future__ import annotations
 
-from conftest import poll_until_complete
+from .conftest import poll_until_complete
 from fastapi.testclient import TestClient
 
 OFFICE = "sea-office-001"

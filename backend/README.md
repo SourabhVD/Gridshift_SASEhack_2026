@@ -1,27 +1,31 @@
-# GridShift backend — reference implementation
+# GridShift backend
 
-A complete, runnable implementation of the API contract the dashboard already
-expects, meant to be **read and adapted**, not deployed. It serves the nine
-endpoints in `frontend/src/lib/api.ts` against four demo buildings, runs a
-Gemini function-calling agent whose every tool call lands in the event stream,
-and works with no API key at all.
+A complete, runnable implementation of the API contract the dashboard expects.
+It serves the nine endpoints in `frontend/src/lib/api.ts` against four demo
+buildings, runs a Gemini function-calling agent whose every tool call lands in
+the event stream, and works with no API key at all.
 
-Nothing here touches `backend/app/` — that is the skeleton this gets folded
-into. See [Adapting into `backend/app`](#adapting-into-backendapp).
+This started life as `backend/reference/` and now *is* `backend/app/`. The data
+layer is still fixtures and the optimizer is still a heuristic — see
+[HANDOFF.md](HANDOFF.md) for what has to become real, and in what order.
 
 ```
-backend/reference/
+backend/
 ├── README.md
-├── pyproject.toml              project metadata + pytest config
+├── HANDOFF.md                  the production path, step by step
 ├── requirements.txt            fastapi, uvicorn, pydantic, dotenv, google-genai, pytest, httpx
-├── .env.example                copy to .env; every value has a working default
+├── .env.example                copy to backend/.env; every value has a working default
 ├── app/
 │   ├── main.py                 FastAPI app, CORS from env, /health, router
 │   ├── config.py               the one place the environment is read
-│   ├── schemas.py              Pydantic models mirroring frontend/src/types/api.ts
 │   ├── store.py                runs / events / plans / actions, in SQLite
+│   ├── models/
+│   │   └── schemas.py          Pydantic models mirroring frontend/src/types/api.ts
 │   ├── api/
 │   │   └── routes.py           the nine endpoints; no business logic
+│   ├── agent/
+│   │   ├── tools.py            the nine agent tools, as plain functions
+│   │   └── runner.py           the run loop: fake and gemini
 │   ├── fixtures/
 │   │   ├── generator.py        deterministic curve kit + the flow identity
 │   │   ├── spec.py             BuildingFixture, DispatchPolicy, Step
@@ -32,9 +36,7 @@ backend/reference/
 │   │   └── __init__.py         registry, slug/UUID resolution, assert_flows_identity
 │   └── services/
 │       ├── forecast.py         fixtures | ml, and the flow synthesis both share
-│       ├── optimizer.py        the deterministic heuristic + the OR-Tools seam
-│       ├── tools.py            the nine agent tools, as plain functions
-│       └── agent.py            the run loop: fake and gemini
+│       └── optimizer.py        the deterministic heuristic + the OR-Tools seam
 └── tests/
     ├── conftest.py             TestClient + poll_until_complete
     ├── test_contract.py        endpoint shapes, all four buildings
@@ -47,7 +49,7 @@ backend/reference/
 ## Run it
 
 ```bash
-cd backend/reference
+cd backend
 python -m venv .venv
 source .venv/Scripts/activate        # Windows bash; .venv\Scripts\activate on cmd/PowerShell
                                      # source .venv/bin/activate on macOS/Linux
@@ -60,8 +62,10 @@ uvicorn app.main:app --reload --port 8000
 `GET http://localhost:8000/health` reports the configuration actually in force.
 `http://localhost:8000/docs` is the generated OpenAPI page.
 
+Tests run from the **repository root**, which is exactly what CI does:
+
 ```bash
-pytest                               # 54 tests, about 1 second
+python -m pytest                     # 54 backend tests, about 2 seconds
 ```
 
 `.venv/` is already covered by the repo's `.gitignore`.
@@ -71,7 +75,7 @@ pytest                               # 54 tests, about 1 second
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `GRIDSHIFT_AGENT` | `fake` | `fake` replays the scripted run; `gemini` calls the model. `gemini` with no key logs a warning and degrades to `fake`. |
-| `GEMINI_API_KEY` | *(empty)* | Google AI Studio key. Read only by `app/services/agent.py`; it never leaves the backend. |
+| `GEMINI_API_KEY` | *(empty)* | Google AI Studio key. Read only by `app/agent/runner.py`; it never leaves the backend. |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Model id for `GRIDSHIFT_AGENT=gemini`. |
 | `GRIDSHIFT_FORECAST` | `fixtures` | `fixtures` serves the ported demo curves; `ml` calls the `ml` package and falls back to fixtures with a logged warning. |
 | `GRIDSHIFT_ML_MODEL_PATH` | `ml/artifacts/load_forecaster.joblib` | Trained bundle. Relative paths resolve from the repo root. |
@@ -159,7 +163,7 @@ and it is the thing a human can read in a URL.
 ## How the event wrapping works — keep this part
 
 Everything the operator sees comes out of one function,
-`ToolInvoker.invoke` in `app/services/agent.py`. Every tool invocation, in
+`ToolInvoker.invoke` in `app/agent/runner.py`. Every tool invocation, in
 both agent modes, goes through it:
 
 1. write a `tool_call` event carrying the arguments, **before** the call;
@@ -316,10 +320,10 @@ docstring marks the seam.
 
 | Reference file | Where it goes | Notes |
 | --- | --- | --- |
-| `app/schemas.py` | `app/models/schemas.py` | Take verbatim. Keep it pinned to `types/api.ts`; change both in one commit. |
+| `app/models/schemas.py` | `app/models/schemas.py` | Take verbatim. Keep it pinned to `types/api.ts`; change both in one commit. |
 | `app/api/routes.py` | `app/api/routes.py` | Take the shape. Routes stay logic-free per `AGENTS.md`. |
-| `app/services/agent.py` | `app/agent/runner.py` | **Keep `ToolInvoker.invoke` exactly.** Split the two modes into separate modules if you like; do not split the wrapper. |
-| `app/services/tools.py` | `app/agent/tools.py` | Same nine functions; replace the fixture lookups with repository calls. `TOOL_DECLARATIONS` moves with them. |
+| `app/agent/runner.py` | `app/agent/runner.py` | **Keep `ToolInvoker.invoke` exactly.** Split the two modes into separate modules if you like; do not split the wrapper. |
+| `app/agent/tools.py` | `app/agent/tools.py` | Same nine functions; replace the fixture lookups with repository calls. `TOOL_DECLARATIONS` moves with them. |
 | `app/services/optimizer.py` | `optimizer/` | Replace `optimize()` with the OR-Tools model; keep `OptimizationResult` as the interface. |
 | `app/services/forecast.py` | `app/services/forecast.py` | Keep `flows_for_grid()` and the fallback. Point it at the model registry instead of a path. |
 | `app/store.py` | `app/models/` + repositories | The table shapes carry over; the driver does not. |

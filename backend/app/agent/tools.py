@@ -25,10 +25,10 @@ from typing import Any, Callable
 
 from ..fixtures import BuildingFixture, assert_flows_identity
 from ..fixtures.generator import HOURS, NOW_ISO, iso_hour, round1, round2
-from ..schemas import TOOL_NAMES
+from ..models.schemas import TOOL_NAMES
 from ..store import store
-from . import forecast as forecast_service
-from .optimizer import OptimizationResult, optimize
+from ..services import forecast as forecast_service
+from ..services.optimizer import OptimizationResult, optimize
 
 log = logging.getLogger("gridshift.tools")
 

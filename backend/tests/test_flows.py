@@ -11,7 +11,7 @@ the two charts start telling different stories about the same hour.
 from __future__ import annotations
 
 import pytest
-from conftest import BUILDING_IDS, poll_until_complete
+from .conftest import BUILDING_IDS, poll_until_complete
 from fastapi.testclient import TestClient
 
 from app.fixtures import FIXTURES, assert_flows_identity, get_fixture

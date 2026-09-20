@@ -238,7 +238,7 @@ async def run_fake(invoker: ToolInvoker) -> None:
     deterministic, so both produce the same schedule.
     """
     ctx = invoker.ctx
-    from .optimizer import optimize  # local import keeps the module graph flat
+    from ..services.optimizer import optimize  # local import keeps the module graph flat
 
     script = ctx.fixture.build_script(optimize(ctx.fixture))
 
