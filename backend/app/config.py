@@ -45,6 +45,11 @@ class Settings:
     ml_model_path: Path = field(default_factory=lambda: REPO_ROOT / "ml" / "artifacts" / "load_forecaster.joblib")
     ml_package_path: Path = field(default_factory=lambda: REPO_ROOT / "ml")
 
+    #: 'ortools' runs the CP-SAT model; 'heuristic' runs the fixed-order
+    #: three-lever pass. The heuristic stays reachable because it is what the
+    #: frontend README's published figures were computed from.
+    optimizer_mode: str = "ortools"
+
     #: Where evaluate_forecast_date writes its per-date directories.
     backtest_path: Path = field(
         default_factory=lambda: REPO_ROOT / "data" / "processed" / "backtests"
@@ -94,6 +99,9 @@ def get_settings() -> Settings:
         backtest_path=_resolve(
             os.getenv("GRIDSHIFT_BACKTEST_PATH", ""),
             REPO_ROOT / "data" / "processed" / "backtests",
+        ),
+        optimizer_mode=(
+            os.getenv("GRIDSHIFT_OPTIMIZER", "ortools").strip().lower() or "ortools"
         ),
         backtest_date=os.getenv("GRIDSHIFT_BACKTEST_DATE", "").strip(),
         backtest_building=(

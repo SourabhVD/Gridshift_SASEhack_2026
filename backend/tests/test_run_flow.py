@@ -68,9 +68,16 @@ def test_events_are_cumulative_and_ordered(client: TestClient) -> None:
     assert forecast_result["payload"]["threshold_kw"] == 450
 
     # The optimizer's own event carries the numbers the plan is built from.
+    # Which optimizer ran is configuration, so this pins the relationship
+    # rather than a literal: CP-SAT cuts at least as deep as the heuristic's
+    # 438 kW, and a figure equal to the baseline would mean nothing was found.
     optimizer_result = next(e for e in results if e["tool_name"] == "run_schedule_optimizer")
-    assert optimizer_result["payload"]["optimized_peak_kw"] == 438
+    optimized_peak = optimizer_result["payload"]["optimized_peak_kw"]
+    assert 0 < optimized_peak <= 438
     assert optimizer_result["duration_ms"] is not None
+
+    plan = client.get(f"/api/gridshift/{run_id}/plan").json()
+    assert plan["optimized_peak_kw"] == optimized_peak, "the plan must report what the optimizer returned"
 
     validate_result = next(e for e in results if e["tool_name"] == "validate_schedule")
     assert validate_result["payload"]["violations"] == 0

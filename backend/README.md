@@ -5,9 +5,9 @@ It serves the nine endpoints in `frontend/src/lib/api.ts` against four demo
 buildings, runs a Gemini function-calling agent whose every tool call lands in
 the event stream, and works with no API key at all.
 
-This started life as `backend/reference/` and now *is* `backend/app/`. The data
-layer is still fixtures and the optimizer is still a heuristic — see
-[HANDOFF.md](HANDOFF.md) for what has to become real, and in what order.
+This started life as `backend/reference/` and now *is* `backend/app/`. The
+optimizer is a real CP-SAT model; the data layer is still fixtures — see
+[HANDOFF.md](HANDOFF.md) for what is left, and in what order.
 
 ```
 backend/
@@ -16,6 +16,7 @@ backend/
 ├── requirements.txt            what CI installs; the API itself needs only
 │                               fastapi, uvicorn, pydantic, dotenv, google-genai, pytest, httpx
 ├── .env.example                copy to backend/.env; every value has a working default
+├── Dockerfile                   one container, no Python setup needed
 ├── app/
 │   ├── main.py                 FastAPI app, CORS from env, /health, router
 │   ├── config.py               the one place the environment is read
@@ -36,12 +37,15 @@ backend/
 │   │   ├── residence.py        sea-residence-004 Alder Street Residence
 │   │   └── __init__.py         registry, slug/UUID resolution, assert_flows_identity
 │   └── services/
-│       ├── forecast.py         fixtures | ml, and the flow synthesis both share
-│       └── optimizer.py        the deterministic heuristic + the OR-Tools seam
+│       ├── forecast.py         fixtures | ml | backtest, and the shared flow synthesis
+│       ├── backtest.py         reads the ml harness's artifacts; stdlib only
+│       └── optimizer.py        the CP-SAT model and the heuristic it replaced
 └── tests/
     ├── conftest.py             TestClient + poll_until_complete
     ├── test_contract.py        endpoint shapes, all four buildings
-    ├── test_flows.py           the flow identity, published numbers, optimizer
+    ├── test_flows.py           the flow identity, published numbers, heuristic
+    ├── test_optimizer_cpsat.py the solver's properties and device limits
+    ├── test_backtest.py        the real-day forecast mode
     └── test_run_flow.py        run → events → plan → approve → reject → 409 → reset
 ```
 
@@ -66,10 +70,24 @@ uvicorn app.main:app --reload --port 8000
 Tests run from the **repository root**, which is exactly what CI does:
 
 ```bash
-python -m pytest                     # 54 backend tests, about 2 seconds
+python -m pytest                     # 100 backend tests, a few seconds
 ```
 
 `.venv/` is already covered by the repo's `.gitignore`.
+
+### Or in a container
+
+```bash
+docker build -t gridshift-backend backend
+docker run --rm -p 8000:8000 gridshift-backend
+```
+
+That is the whole demo with no Python setup: four buildings, the scripted
+agent, the CP-SAT optimizer. Pass the live agent's key at run time rather than
+baking it into an image, and mount backtest artifacts read-only if you want a
+real day — the header of `backend/Dockerfile` has both commands. It runs a
+single worker on purpose: runs are asyncio tasks in-process and the store is in
+memory, so a second worker would answer `/events` for a run it never saw.
 
 ### Environment
 
@@ -83,6 +101,7 @@ python -m pytest                     # 54 backend tests, about 2 seconds
 | `GRIDSHIFT_BACKTEST_PATH` | `data/processed/backtests` | Where `ml/evaluate_forecast_date.py` writes its per-date directories. |
 | `GRIDSHIFT_BACKTEST_DATE` | *(empty)* | Which day to serve. Empty means the most recent one present. |
 | `GRIDSHIFT_BACKTEST_BUILDING` | `sea-office-001` | The one site the backtest speaks for; every other slug keeps its fixture curve. |
+| `GRIDSHIFT_OPTIMIZER` | `ortools` | `ortools` runs the CP-SAT model; `heuristic` runs the fixed-order three-lever pass the published figures came from. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
 | `GRIDSHIFT_AGENT_SPEED` | `1.0` | Multiplies every simulated agent delay. `0` finishes a run instantly — the test suite sets this. |
 
@@ -402,14 +421,58 @@ derivation, and `test_heuristic_path_without_a_pinned_policy` runs that path for
 all four. The optimized curve is always re-derived from the components through
 the identity, so an action's stated kW really is what moves the line.
 
-The heuristic never backtracks, so it cannot trade one lever against another —
-it will not discharge the battery harder to buy the HVAC action a shorter
-drift. `solve_with_ortools()` is the stub where a CP-SAT model belongs (one
-integer variable per resource-hour in watts, the identity as a linear
-constraint, lexicographic `minimize(peak, then cost)`), returning the same
-`OptimizationResult` so nothing downstream changes. It raises
-`NotImplementedError` today, and the `TODO: replace with OR-Tools` in the module
-docstring marks the seam.
+The heuristic never backtracks, which is its ceiling: it cannot discharge the
+battery harder to buy the HVAC action a shorter drift, because by the time it
+reaches the battery the HVAC decision is already made.
+
+### The CP-SAT model — the default
+
+`solve_with_ortools()` closes that gap. One integer variable per resource-hour
+in tenths of a kW, the flow identity as a linear constraint each hour, and a
+lexicographic objective solved in two passes: minimise the peak, then pin that
+peak and minimise cost underneath it. Two solves rather than one weighted
+objective, so "minimise cost" cannot quietly buy a worse peak by being large
+enough. `solve()` picks between the two on `GRIDSHIFT_OPTIMIZER`, and the agent
+calls `solve()`.
+
+Holding all three levers at once is what buys the improvement:
+
+| Site | Heuristic cut | CP-SAT cut | Demand charge avoided |
+| --- | ---: | ---: | --- |
+| `sea-office-001` | 84.0 kW | 152.2 kW | $714 → $1,294 /mo |
+| `sea-hospital-002` | 92.0 kW | 139.9 kW | $782 → $1,189 /mo |
+| `sea-warehouse-003` | 115.0 kW | 266.3 kW | $978 → $2,264 /mo |
+| `sea-residence-004` | 9.3 kW | 10.0 kW | $79 → $85 /mo |
+
+All four solve to `OPTIMAL` in under 35 ms.
+
+**There is no fallback behind it, on purpose.** Every constraint admits the
+untouched baseline and the baseline is fed in as a solution hint, so "no
+solution" is not a state this model can reach, and the solver can never return
+something worse than leaving the building alone. A fallback would only hide a
+formulation bug that ought to be loud. `test_optimizer_cpsat.py` pins that
+property along with the flow identity, energy conservation, the device limits
+and reproducibility.
+
+Three modelling decisions worth knowing before you change it:
+
+* **Tenths of a kW, not watts.** Every value the solver returns is already on
+  the 0.1 kW grid the wire format uses, so the flow identity stays exact after
+  conversion with no float residue to round away.
+* **The grid floor is the site's own export, not zero.** A site with enough PV
+  exports at midday — the residence baseline runs to −4 kW — so a zero floor
+  would exclude its own curve and make the model infeasible for that building
+  alone. Pinning the floor at the baseline's export also stops the solver
+  inventing new export: dumping the pack into the grid for an energy credit
+  prices badly under this tariff and is not a schedule anyone would approve.
+* **The SOC floor carries half a percent of margin.** The solver will sit
+  exactly on any floor it is given, because energy held back is peak not
+  shaved. Downstream, `validate_schedule` re-walks the state of charge in
+  percent and rounds every hour, so an exact landing here reads as a fraction
+  below the floor there and the agent rejects its own plan.
+
+Fixed seed, single worker: the same building produces the same plan every run,
+because a demo whose numbers move between takes is worse than a slower one.
 
 ---
 

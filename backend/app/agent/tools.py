@@ -28,7 +28,7 @@ from ..fixtures.generator import HOURS, NOW_ISO, iso_hour, round1, round2
 from ..models.schemas import TOOL_NAMES
 from ..store import store
 from ..services import forecast as forecast_service
-from ..services.optimizer import OptimizationResult, optimize
+from ..services.optimizer import OptimizationResult, solve
 
 log = logging.getLogger("gridshift.tools")
 
@@ -122,7 +122,7 @@ def run_schedule_optimizer(
     Compute the dispatch schedule. The model chooses *when* to call this and
     with which resources; the kW come out of services/optimizer.py.
     """
-    result = optimize(ctx.fixture)
+    result = solve(ctx.fixture)
     ctx.result = result
 
     return {
