@@ -119,14 +119,21 @@ def test_building_ids_resolve_as_slug_or_uuid(client: TestClient) -> None:
     assert client.get(f"/api/gridshift/{run_id}/events").status_code == 404
 
 
-def test_unknown_building_is_404(client: TestClient) -> None:
+def test_unknown_building_is_422(client: TestClient) -> None:
+    """
+    A validation failure, not a missing endpoint.
+
+    404 here would be read by the frontend's partial mode as "not implemented
+    yet", and it would quietly serve mock data instead of surfacing the error.
+    `detail` stays a plain string, unlike FastAPI's own list-valued 422.
+    """
     for path in ("/api/dashboard/summary", "/api/forecast"):
         response = client.get(path, params={"building_id": "nope-000"})
-        assert response.status_code == 404
+        assert response.status_code == 422
         assert "nope-000" in response.json()["detail"]
 
-    assert client.post("/api/gridshift/run", json={"building_id": "nope-000"}).status_code == 404
-    assert client.post("/api/demo/reset", json={"building_id": "nope-000"}).status_code == 404
+    assert client.post("/api/gridshift/run", json={"building_id": "nope-000"}).status_code == 422
+    assert client.post("/api/demo/reset", json={"building_id": "nope-000"}).status_code == 422
 
 
 def test_unknown_run_is_404(client: TestClient) -> None:

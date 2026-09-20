@@ -11,6 +11,8 @@ from __future__ import annotations
 from .conftest import poll_until_complete
 from fastapi.testclient import TestClient
 
+from app.store import store
+
 OFFICE = "sea-office-001"
 HOSPITAL = "sea-hospital-002"
 
@@ -22,15 +24,25 @@ def start(client: TestClient, building_id: str) -> str:
 
 
 def test_plan_404s_until_the_run_completes(client: TestClient) -> None:
-    run_id = start(client, OFFICE)
-    # The run is detached, so the plan may or may not exist yet; what must not
-    # happen is a 500 or a half-built plan.
-    early = client.get(f"/api/gridshift/{run_id}/plan")
-    assert early.status_code in {200, 404}
-    if early.status_code == 404:
-        assert "not ready" in early.json()["detail"].lower()
+    """
+    A plan row existing is not enough -- the route must gate on run status.
 
+    save_action_plan lands two steps before the run ends. Without the gate the
+    plan is readable while /events still reports running, an operator approves
+    from that early view, and execute_run then overwrites the decision when it
+    sets the terminal status. The suite runs with GRIDSHIFT_AGENT_SPEED=0, so
+    the gate is driven directly rather than raced against a detached task.
+    """
+    run_id = start(client, OFFICE)
     poll_until_complete(client, run_id)
+    assert client.get(f"/api/gridshift/{run_id}/plan").status_code == 200
+
+    store.set_status(run_id, "running")
+    early = client.get(f"/api/gridshift/{run_id}/plan")
+    assert early.status_code == 404
+    assert "not ready" in early.json()["detail"].lower()
+
+    store.set_status(run_id, "awaiting_approval")
     assert client.get(f"/api/gridshift/{run_id}/plan").status_code == 200
 
 
@@ -142,6 +154,26 @@ def test_a_new_run_supersedes_the_previous_one(client: TestClient) -> None:
     assert first != second
     assert client.get(f"/api/gridshift/{first}/events").status_code == 404
     assert client.get(f"/api/gridshift/{second}/plan").status_code == 200
+
+
+def test_actions_of_a_superseded_run_are_gone(client: TestClient) -> None:
+    """
+    Superseding a run must take its actions with it.
+
+    The cascade only fires with foreign keys enabled, and decide_action must
+    resolve through a live run regardless -- once the store moves behind an
+    HTTP API there is no cascade at all. Otherwise a stale browser tab can
+    approve a dead plan and get a 200 for it.
+    """
+    first = start(client, OFFICE)
+    poll_until_complete(client, first)
+    stale_action = client.get(f"/api/gridshift/{first}/plan").json()["actions"][0]["id"]
+
+    second = start(client, OFFICE)
+    poll_until_complete(client, second)
+
+    assert client.post(f"/api/actions/{stale_action}/approve").status_code == 404
+    assert client.post(f"/api/actions/{stale_action}/reject").status_code == 404
 
 
 def test_cors_preflight_allows_the_dashboard(client: TestClient) -> None:

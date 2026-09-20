@@ -46,7 +46,7 @@ _ML_WARNED = False
 
 
 class UnknownBuilding(Exception):
-    """Raised for a building_id no fixture knows. Surfaces as HTTP 404."""
+    """Raised for a building_id no fixture knows. Surfaces as HTTP 422."""
 
 
 def require_fixture(building_id: str) -> BuildingFixture:

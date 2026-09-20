@@ -86,6 +86,12 @@ class Store:
         self._lock = threading.RLock()
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
+        # sqlite3 defaults foreign-key enforcement to OFF, which makes every
+        # ON DELETE CASCADE in SCHEMA inert. create_run supersedes a building's
+        # previous run with a bare DELETE FROM runs and relies on that cascade
+        # to take its events, plan and actions with it. The pragma is a no-op
+        # inside a transaction, so it has to run before the schema script.
+        self._db.execute("PRAGMA foreign_keys = ON")
         self._db.executescript(SCHEMA)
         self._db.commit()
         self._counter = 0
@@ -252,7 +258,16 @@ class Store:
         difference between "gone" and "already done".
         """
         with self._lock:
-            row = self._db.execute("SELECT * FROM actions WHERE id = ?", (action_id,)).fetchone()
+            # Join through runs so an action whose run is gone reads as absent,
+            # the same way /events and /plan already do for that run. This does
+            # not depend on the cascade, which matters once the store moves
+            # behind an HTTP API where no cascade exists at all.
+            row = self._db.execute(
+                "SELECT actions.* FROM actions "
+                "JOIN runs ON runs.run_id = actions.run_id "
+                "WHERE actions.id = ?",
+                (action_id,),
+            ).fetchone()
             if row is None:
                 raise NotFound("No action plan is awaiting a decision.")
             if row["status"] != "pending":
