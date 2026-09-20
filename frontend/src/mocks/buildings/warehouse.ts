@@ -8,11 +8,20 @@
  * pushes the site from 111 kW at noon to 426 kW against a 350 kW threshold.
  *
  * Because the vans are the peak, re-queueing them is the whole plan. The
- * solver does not stop at moving a block of vans into the evening: it returns
+ * engine does not stop at moving a block of vans into the evening: it returns
  * a charging rate for every hour that meters the fleet out from 13:00 all the
- * way to 23:00, and the battery fills the two hours that would otherwise
+ * way to 22:00, and the battery covers the one hour that would otherwise
  * stick up through the line. What comes back is not a lower spike, it is a
- * flat 232.4 kW ceiling held from 13:00 to the end of the day.
+ * flat 234.1 kW ceiling held from 13:00 to the end of the day.
+ *
+ * The hour to understand is 20:00. The engine puts 263.6 kW of charging there
+ * -- all but a whisker of full fleet concurrency -- and hides it behind a
+ * 208.9 kW discharge, so the meter reads 233.7 kW. Read the battery row on its
+ * own and it looks pointless: it cuts nothing from the 15:00 interval that set
+ * the old peak, and it loses $2.16 on energy, because it both buys and sells
+ * off-peak and pays the round trip for the privilege. Take it away and 20:00
+ * bills at 442.6 kW, which is worse than doing nothing at all. That is the
+ * whole argument for pricing peaks and energy separately, in one hour.
  *
  * HVAC gets no action at all -- an unconditioned high-bay with dock-door
  * infiltration has no thermal mass to pre-cool and no occupant comfort band to
@@ -24,7 +33,9 @@ import type { Action, Building } from '@/types/api';
 import {
   HOURS,
   NOW_HOUR,
+  PRICE_PER_KWH,
   type FlowComponents,
+  actionWindow,
   baseFromGrid,
   energyCost,
   flat,
@@ -36,7 +47,6 @@ import {
   round1,
   round2,
   scheduleScript,
-  socWalk,
   solarBell,
   zeros,
 } from './shared';
@@ -128,48 +138,56 @@ const BASELINE_PARTS: FlowComponents = {
 /* -------------------------------------------------------------------------- */
 
 /**
- * The split the plan is written around, and the one the yard is asked to
- * agree to: half of every arrival cohort keeps its afternoon slot, the other
- * half is re-queued into 18:00-22:00. Twelve vans either way.
- */
-const STAYING_VANS = BASELINE_VANS.map((n) => Math.ceil(n / 2));
-const MOVED_VANS = BASELINE_VANS.map((n) => Math.floor(n / 2));
-
-/**
- * What the solver actually returned is finer than whole vans: a charging rate
- * for every hour, written here as the change from the baseline. It lifts
- * 590.4 kWh out of 13:00-17:00 and lands the same 590.4 kWh between 18:00 and
- * 23:00, so the fleet still takes its full 968 kWh before the 05:00 departure
- * -- only the hour it arrives in changes.
+ * What the engine returns is finer than whole vans: a charging rate for every
+ * hour, written here as the change from the baseline. It lifts 648.6 kWh out
+ * of 13:00-17:00 and lands the same 648.6 kWh between 17:00 and 23:00, so the
+ * fleet still takes its full 968 kWh before the 05:00 departure -- only the
+ * hour it arrives in changes.
+ *
+ * Nobody asked for a cohort split and the engine did not produce one, which is
+ * why the van-by-van framing this file used to carry is gone: the answer is a
+ * rate schedule, and describing it as "twelve vans move" was a story about the
+ * answer rather than the answer.
  */
 const EV_DELTA_KW: Record<number, number> = {
-  13: -145.6,
-  14: -111.6,
-  15: -193.6,
-  16: -139.6,
-  18: +54.4,
-  19: +53.4,
-  20: +53.4,
-  21: +54.4,
-  22: +237.4,
-  23: +137.4,
+  13: -143.9,
+  14: -174.9,
+  15: -191.9,
+  16: -137.9,
+  17: +67.1,
+  18: +56.1,
+  19: +55.1,
+  20: +263.6,
+  21: +67.6,
+  22: +139.1,
 };
 const OPTIMIZED_EV = BASELINE_EV.map((kw, h) => round1(kw + (EV_DELTA_KW[h] ?? 0)));
 
 /**
  * The pack's day, signed: positive discharges into the building, negative
- * charges off the grid. It fills at midnight on the $0.09 rate, gives 65 kW
- * back at 14:00, takes the same 65 kW again at 17:00 where the site is sitting
- * below the ceiling anyway, and empties 100 kW into the 22:00 van block. The
- * four hours net to zero, so the pack refills inside the modelled day.
+ * charges off the grid. It fills at midnight on the $0.09 rate, empties
+ * 208.9 kW into the 20:00 van block -- the hour that would otherwise bill
+ * higher than the baseline peak -- trickles the last 11.5 kW out at 21:00, and
+ * buys the energy back at 23:00.
+ *
+ * 244.4 kWh in for 220.4 kWh out. The 24 kWh gap is the 95% round trip, and it
+ * is the reason this row is worth -$2.16 on energy: everything it does happens
+ * at $0.09 either way, so there is no arbitrage in it at all. It is here
+ * purely to hold the ceiling.
  */
 const BATTERY_DISPATCH_KW: Record<number, number> = {
-  0: -100,
-  14: +65,
-  17: -65,
-  22: +100,
+  0: -105.3,
+  20: +208.9,
+  21: +11.5,
+  23: -139.1,
 };
 const OPTIMIZED_BATTERY = zeros().map((kw, h) => kw + (BATTERY_DISPATCH_KW[h] ?? 0));
+
+/** State of charge as the engine solved it. See the note on OPTIMIZED_PARTS. */
+const OPTIMIZED_SOC = [
+  100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+  100, 100, 100, 100, 100, 78, 76.8, 76.8, 90,
+];
 
 /** kWh taken out of the pack over the day, and kWh put back inside the day. */
 const BATTERY_DISPATCHED_KWH = round1(
@@ -194,11 +212,10 @@ const OPTIMIZED_PARTS: FlowComponents = {
   hvac: BASELINE_HVAC,
   solar: SOLAR_KW,
   battery: OPTIMIZED_BATTERY,
-  soc: socWalk(
-    OPTIMIZED_BATTERY,
-    START_SOC_PCT,
-    WAREHOUSE_BUILDING.battery_capacity_kwh,
-  ),
+  // The engine's own series, not a walk of the dispatch above: at 95% each
+  // way the cells take in less than the inverter draws, so walking the metered
+  // kW reads 100.5% at midday on a plan the engine capped at 100%.
+  soc: OPTIMIZED_SOC,
 };
 
 export const OPTIMIZED_GRID_KW = gridFromComponents(OPTIMIZED_PARTS);
@@ -221,35 +238,106 @@ const OPTIMIZED_COST_USD = round2(
 );
 const SAVINGS_USD = round2(BASELINE_COST_USD - OPTIMIZED_COST_USD);
 const DEMAND_CHARGE_AVOIDED_USD = round2(PEAK_REDUCTION_KW * 8.5);
-const MOVED_VAN_COUNT = Math.max(...MOVED_VANS);
-const STAYING_VAN_COUNT = Math.max(...STAYING_VANS);
+/** "13:00". Hour 24 reads as midnight, which is where an evening block closes. */
+const clock = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`;
+
+const BASELINE_PEAK_HOUR = BASELINE_GRID_KW.indexOf(BASELINE_PEAK_KW);
+
 /** The rate the battery action is quoted at: its deepest discharge hour. */
 const DISCHARGE_KW = Math.max(...OPTIMIZED_BATTERY);
+const DISCHARGE_HOURS = OPTIMIZED_BATTERY.map((kw, h) => (kw > 0 ? h : -1)).filter(
+  (h) => h >= 0,
+);
+const DISCHARGE_START_HOUR = DISCHARGE_HOURS[0];
+const DISCHARGE_END_HOUR = DISCHARGE_HOURS[DISCHARGE_HOURS.length - 1] + 1;
 const END_SOC_PCT = OPTIMIZED_PARTS.soc[HOURS - 1];
+
+/** Hours the fleet is held under its baseline rate, and where it lands. */
+const EV_OUT_HOURS = Object.keys(EV_DELTA_KW)
+  .map(Number)
+  .filter((h) => EV_DELTA_KW[h] < 0)
+  .sort((a, b) => a - b);
+const EV_IN_HOURS = Object.keys(EV_DELTA_KW)
+  .map(Number)
+  .filter((h) => EV_DELTA_KW[h] > 0)
+  .sort((a, b) => a - b);
+const EV_SHIFTED_KWH = round1(
+  EV_IN_HOURS.reduce((sum, h) => sum + EV_DELTA_KW[h], 0),
+);
+/** Deepest single-hour cut, which is what the action's magnitude quotes. */
+const EV_DEEPEST_CUT_KW = round1(
+  Math.max(...EV_OUT_HOURS.map((h) => -EV_DELTA_KW[h])),
+);
+/** What each lever takes out of the interval that set the BASELINE peak. */
+const EV_CUT_AT_PEAK_KW = round1(
+  BASELINE_EV[BASELINE_PEAK_HOUR] - OPTIMIZED_EV[BASELINE_PEAK_HOUR],
+);
+const BATTERY_CUT_AT_PEAK_KW = round1(OPTIMIZED_BATTERY[BASELINE_PEAK_HOUR]);
+
+/**
+ * What 20:00 would bill without the pack. Higher than the day it replaces,
+ * which is the only honest way to describe a row whose own peak-cut reads 0.
+ */
+const UNCOVERED_EVENING_KW = round1(
+  OPTIMIZED_GRID_KW[DISCHARGE_START_HOUR] + DISCHARGE_KW,
+);
+
+/** Same rule the backend applies: the hours each lever actually moves. */
+const [EV_START_HOUR, EV_END_HOUR] = actionWindow(EV_DELTA_KW);
+
+/**
+ * Where the day-ahead saving comes from, priced against the baseline at the
+ * tariff, so the two levers add up to SAVINGS_USD exactly rather than being
+ * typed in by hand and drifting away from it. The battery's share is
+ * negative, and that is not a bug: see the note on BATTERY_DISPATCH_KW.
+ */
+const BATTERY_SAVINGS_USD = round2(
+  OPTIMIZED_BATTERY.reduce((sum, kw, h) => sum + kw * PRICE_PER_KWH[h], 0),
+);
+const EV_SAVINGS_USD = round2(
+  BASELINE_EV.reduce(
+    (sum, kw, h) => sum + (kw - OPTIMIZED_EV[h]) * PRICE_PER_KWH[h],
+    0,
+  ),
+);
+
+/**
+ * What the scripted agent says it ran, and how long it took. Both transcribed
+ * from a real solve: the payload used to claim "CP-SAT" and 1418 ms, neither
+ * of which has been true since the MIP engine became the default.
+ */
+const SOLVER_NAME = 'MIP (OR-Tools/SCIP)';
+const SOLVE_TIME_MS = 44;
 
 /* -------------------------------------------------------------------------- */
 /* Plan                                                                        */
 /* -------------------------------------------------------------------------- */
 
 export const PLAN_SUMMARY = [
-  `Today's forecast peaks at ${BASELINE_PEAK_KW} kW at 15:00, ${BASELINE_PEAK_KW - 350} kW`,
-  'above the 350 kW threshold, and the cause is unambiguous: the building itself',
-  `never draws more than about 180 kW, and the other ${24 * VAN_CHARGER_KW} kW is 24 delivery vans`,
-  'charging at once between 13:00 and 17:00. So the plan does not shed anything,',
-  `it re-queues. ${STAYING_VAN_COUNT} vans keep their afternoon slot, ${MOVED_VAN_COUNT} move to 18:00-22:00,`,
-  'and the optimizer meters the rest of the fleet out hour by hour as far as',
-  '23:00, so no single hour carries more than it has to. Because the vans are',
-  'not back on route until 05:00 nobody waits on a charge. The battery fills at',
-  `midnight on the $0.09 rate, gives ${BATTERY_DISPATCH_KW[14]} kW back at 14:00, takes the same`,
-  `${BATTERY_DISPATCH_KW[14]} kW again at 17:00 where the site has room, and empties ${DISCHARGE_KW} kW into`,
-  `the 22:00 van block. That is ${BATTERY_DISPATCHED_KWH} kWh moved across the day, and because the`,
-  `pack refills inside the same 24 hours it ends at the ${END_SOC_PCT}% it started at.`,
-  `Peak falls from ${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, a ${PEAK_REDUCTION_KW} kW cut worth`,
-  `about $${DEMAND_CHARGE_AVOIDED_USD.toFixed(2)} on the demand charge, plus`,
+  `Today's forecast peaks at ${BASELINE_PEAK_KW} kW at ${clock(BASELINE_PEAK_HOUR)},`,
+  `${BASELINE_PEAK_KW - 350} kW above the 350 kW threshold, and the cause is`,
+  'unambiguous: the building itself never draws more than about 180 kW, and the',
+  `other ${24 * VAN_CHARGER_KW} kW is 24 delivery vans charging at once between 13:00 and 17:00.`,
+  'So the plan does not shed anything, it re-queues. The optimizer meters the',
+  `fleet out hour by hour from ${clock(EV_OUT_HOURS[0])} to ${clock(22)}, moving`,
+  `${EV_SHIFTED_KWH} kWh later in the day so no single hour carries more than it has`,
+  'to; because the vans are not back on route until 05:00, nobody waits on a',
+  `charge. The awkward hour is ${clock(DISCHARGE_START_HOUR)}, where the engine parks`,
+  `${round1(OPTIMIZED_EV[DISCHARGE_START_HOUR])} kW of charging -- almost full fleet`,
+  `concurrency -- and covers it with a ${DISCHARGE_KW} kW discharge, so the meter reads`,
+  `${OPTIMIZED_GRID_KW[DISCHARGE_START_HOUR]} kW instead of ${UNCOVERED_EVENING_KW} kW. That`,
+  `battery row cuts nothing from ${clock(BASELINE_PEAK_HOUR)} and loses`,
+  `$${Math.abs(BATTERY_SAVINGS_USD).toFixed(2)} on energy, because it buys and sells on`,
+  'the same $0.09 rate and pays the round trip; without it the evening bills higher',
+  `than the day it replaced. The pack fills at midnight, empties into`,
+  `${clock(DISCHARGE_START_HOUR)}, and buys the energy back at ${clock(23)}, ending at`,
+  `the ${END_SOC_PCT}% it started at. Peak falls from ${BASELINE_PEAK_KW} kW to`,
+  `${OPTIMIZED_PEAK_KW} kW, a ${PEAK_REDUCTION_KW} kW cut worth about`,
+  `$${DEMAND_CHARGE_AVOIDED_USD.toFixed(2)} on the demand charge, plus`,
   `$${SAVINGS_USD.toFixed(2)} of day-ahead energy. There is deliberately no HVAC`,
   'action: an unconditioned high bay with dock doors cycling has no thermal mass',
   'to pre-cool and no comfort band to borrow against, so offering one would be',
-  'theatre. There is no single binding hour left either: from 13:00 to 23:00 the',
+  'theatre. There is no single binding hour left either: from 13:00 to midnight the',
   `site rides a flat ${OPTIMIZED_PEAK_KW} kW ceiling, ${THRESHOLD_HEADROOM_KW} kW under threshold.`,
 ].join(' ');
 
@@ -259,14 +347,14 @@ function buildActions(runId: string): Action[] {
       id: 'act-ev-01',
       run_id: runId,
       type: 'ev_charging_shift',
-      title: `Stagger ${MOVED_VAN_COUNT} of 24 vans into 18:00-22:00`,
-      description: `Split each arrival cohort in half: ${STAYING_VAN_COUNT} vans keep their 13:00-17:00 slot and ${MOVED_VAN_COUNT} are re-queued into 18:00-22:00 at 11 kW each. Van-hours are identical either way, so every vehicle reaches the same state of charge -- the fleet does not leave the yard until 05:00, which is six hours of slack. This single action takes ${MOVED_VAN_COUNT * VAN_CHARGER_KW} kW out of the peak-setting interval.`,
-      start_time: isoHour(18),
-      end_time: isoHour(22),
-      magnitude: MOVED_VAN_COUNT * VAN_CHARGER_KW,
+      title: `Meter the fleet out across ${clock(EV_START_HOUR)}-${clock(EV_END_HOUR)}`,
+      description: `Hold the yard chargers to a rate the site can carry rather than letting 24 vans draw at once: ${round1(OPTIMIZED_EV[13])} kW at 13:00 tapering to ${round1(OPTIMIZED_EV[16])} kW at 16:00, then the remaining ${EV_SHIFTED_KWH} kWh across the evening, ending with ${round1(OPTIMIZED_EV[20])} kW at ${clock(20)} and ${round1(OPTIMIZED_EV[22])} kW at ${clock(22)}. Van-hours are identical either way, so every vehicle reaches the same state of charge -- the fleet does not leave the yard until 05:00, which is six hours of slack. This single action takes ${EV_CUT_AT_PEAK_KW} kW out of the peak-setting interval, and it is the whole of the demand-charge saving.`,
+      start_time: isoHour(EV_START_HOUR),
+      end_time: isoHour(EV_END_HOUR),
+      magnitude: EV_DEEPEST_CUT_KW,
       unit: 'kW',
-      estimated_peak_reduction_kw: MOVED_VAN_COUNT * VAN_CHARGER_KW,
-      estimated_savings_usd: 14.6,
+      estimated_peak_reduction_kw: EV_CUT_AT_PEAK_KW,
+      estimated_savings_usd: EV_SAVINGS_USD,
       status: 'pending',
       constraints_checked: [
         'all_vans_full_by_0500_departure',
@@ -279,14 +367,14 @@ function buildActions(runId: string): Action[] {
       id: 'act-battery-02',
       run_id: runId,
       type: 'battery_discharge',
-      title: `Discharge battery at ${DISCHARGE_KW} kW, 14:00-17:00`,
-      description: `Dispatch ${BATTERY_DISPATCHED_KWH} kWh from the 1000 kWh pack across the three on-peak afternoon hours, taking SOC from ${START_SOC_PCT}% to ${END_SOC_PCT}% -- nowhere near the 10% floor, and a fraction of the 500 kW inverter. This is mostly an arbitrage action: ${BATTERY_DISPATCHED_KWH} kWh bought back overnight at $0.09 instead of drawn at $0.16. It also leaves headroom if a route runs late and the afternoon cohort arrives bunched.`,
-      start_time: isoHour(14),
-      end_time: isoHour(17),
+      title: `Discharge battery at ${DISCHARGE_KW} kW, ${clock(DISCHARGE_START_HOUR)}-${clock(DISCHARGE_END_HOUR)}`,
+      description: `Dispatch ${BATTERY_DISPATCHED_KWH} kWh from the 1000 kWh pack into the evening charging block, taking SOC from 100% down to ${OPTIMIZED_PARTS.soc[DISCHARGE_END_HOUR]}% -- nowhere near the ${RESERVE_FLOOR_PCT}% floor, and well inside the 500 kW inverter. Read on its own this row looks like it earns nothing: it takes ${BATTERY_CUT_AT_PEAK_KW} kW out of the ${clock(BASELINE_PEAK_HOUR)} interval that set the old peak, and its energy line is -$${Math.abs(BATTERY_SAVINGS_USD).toFixed(2)}, because it charges and discharges on the same $0.09 rate and pays the 95% round trip both ways. It is not arbitrage and it is not padding. It is what makes the ${clock(DISCHARGE_START_HOUR)} charging block possible: without the pack that hour bills at ${UNCOVERED_EVENING_KW} kW, higher than the ${BASELINE_PEAK_KW} kW day it is replacing, and the entire ${PEAK_REDUCTION_KW} kW cut goes with it.`,
+      start_time: isoHour(DISCHARGE_START_HOUR),
+      end_time: isoHour(DISCHARGE_END_HOUR),
       magnitude: DISCHARGE_KW,
       unit: 'kW',
-      estimated_peak_reduction_kw: DISCHARGE_KW,
-      estimated_savings_usd: 12.6,
+      estimated_peak_reduction_kw: BATTERY_CUT_AT_PEAK_KW,
+      estimated_savings_usd: BATTERY_SAVINGS_USD,
       status: 'pending',
       constraints_checked: [
         'soc_reserve_floor_10pct',
@@ -391,7 +479,7 @@ export const WAREHOUSE_SCRIPT = scheduleScript([
   {
     type: 'thinking',
     tool_name: null,
-    message: `So this is a queueing problem, not a shedding problem. If the vans create the peak and every van has six hours of slack, splitting the fleet across two windows is worth more than anything the battery can do -- and it costs nobody anything. I will let the optimizer place the split and use the battery for on-peak arbitrage on top.`,
+    message: `So this is a queueing problem, not a shedding problem. If the vans create the peak and every van has six hours of slack, re-queueing them is worth more than anything the battery can do -- and it costs nobody anything. I will let the optimizer set the rate hour by hour rather than guessing at a split, and keep the battery in the resource list in case moving the load creates a new peak somewhere else.`,
     payload: null,
     duration_ms: 1050,
   },
@@ -405,29 +493,31 @@ export const WAREHOUSE_SCRIPT = scheduleScript([
       horizon_hours: 24,
       resources: ['battery', 'ev'],
       excluded_resources: ['hvac'],
-      solver: 'CP-SAT',
+      solver: SOLVER_NAME,
     },
     duration_ms: null,
   },
   {
     type: 'tool_result',
     tool_name: 'run_schedule_optimizer',
-    message: `Solver returned an optimal schedule in 1.4 s. Peak drops from ${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, a ${PEAK_REDUCTION_KW} kW cut. It went further than the ${STAYING_VAN_COUNT}/${MOVED_VAN_COUNT} split I had in mind: it meters the charging rate hour by hour out to 23:00 and holds the site on a flat ${OPTIMIZED_PEAK_KW} kW line from 13:00 onward. That is why there is no binding hour left to attack -- every hour from 13:00 sets the peak together now, and taking load off one of them only lifts another.`,
+    message: `Solver returned an optimal schedule in ${SOLVE_TIME_MS} ms. Peak drops from ${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, a ${PEAK_REDUCTION_KW} kW cut. It went further than the two-window split I had in mind: it meters the charging rate hour by hour out to ${clock(22)} and holds the site on a flat ${OPTIMIZED_PEAK_KW} kW line from 13:00 onward, so there is no binding hour left to attack -- every hour from 13:00 sets the peak together now, and taking load off one only lifts another. It also did something I would not have: it parks ${round1(OPTIMIZED_EV[20])} kW of charging at ${clock(20)} and covers it with the battery. That costs energy and earns no peak on its own, but it is what makes the rest of the schedule fit.`,
     payload: {
       status: 'OPTIMAL',
-      solve_time_ms: 1418,
+      solver: SOLVER_NAME,
+      solve_time_ms: SOLVE_TIME_MS,
       baseline_peak_kw: BASELINE_PEAK_KW,
       optimized_peak_kw: OPTIMIZED_PEAK_KW,
       peak_reduction_kw: PEAK_REDUCTION_KW,
-      fleet_split: { afternoon: STAYING_VAN_COUNT, evening: MOVED_VAN_COUNT },
+      evening_block_kw: round1(OPTIMIZED_EV[20]),
+      uncovered_evening_kw: UNCOVERED_EVENING_KW,
       binding_interval: isoHour(OPTIMIZED_PEAK_HOUR),
     },
-    duration_ms: 1418,
+    duration_ms: SOLVE_TIME_MS,
   },
   {
     type: 'tool_result',
     tool_name: 'validate_schedule',
-    message: `All 9 constraints pass. Every van reaches full charge before the 05:00 departure with hours to spare, no bay exceeds 11 kW, and the site stays under the 264 kW charger limit in both windows. Battery ends at ${END_SOC_PCT}%, well clear of the ${RESERVE_FLOOR_PCT}% floor.`,
+    message: `All 9 constraints pass. Every van reaches full charge before the 05:00 departure with hours to spare, no bay exceeds 11 kW, and the site never crosses the 264 kW charger limit -- ${clock(20)} comes closest at ${round1(OPTIMIZED_EV[20])} kW. Battery ends at ${END_SOC_PCT}%, back where it started and well clear of the ${RESERVE_FLOOR_PCT}% floor.`,
     payload: {
       constraints_checked: 9,
       violations: 0,
@@ -440,7 +530,7 @@ export const WAREHOUSE_SCRIPT = scheduleScript([
   {
     type: 'decision',
     tool_name: 'save_action_plan',
-    message: `Committing a two-action plan: re-queue ${MOVED_VAN_COUNT} of the 24 vans into 18:00-22:00, and discharge the battery at ${DISCHARGE_KW} kW from 14:00 to 17:00. No HVAC action -- there is no flexibility there to recommend.`,
+    message: `Committing a two-action plan: meter the fleet out across ${clock(EV_START_HOUR)}-${clock(EV_END_HOUR)}, and discharge the battery at ${DISCHARGE_KW} kW from ${clock(DISCHARGE_START_HOUR)} to ${clock(DISCHARGE_END_HOUR)} to cover the evening block. No HVAC action -- there is no flexibility there to recommend.`,
     payload: { action_count: 2, plan_savings_usd: SAVINGS_USD },
     duration_ms: 140,
   },

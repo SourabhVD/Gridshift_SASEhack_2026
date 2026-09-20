@@ -33,9 +33,16 @@
  *
  * The plan is component-first on both sides: nothing is pinned, so every kW an
  * action claims is a kW that really moves in `optimized_flows`. The optimized
- * dispatch is the solver's own: the pack runs an hour-by-hour schedule rather
- * than one flat rate, and the answer is not to empty the 18:00 peak but to put
- * storage under it and hold the whole evening flat at 4.6 kW.
+ * dispatch is the engine's own: the pack runs an hour-by-hour schedule rather
+ * than one flat rate, and the answer is not to empty the 18:00 peak but to cut
+ * the charger there, cover 17:00 and 22:00 out of storage, and hold the whole
+ * evening flat at 4.7 kW.
+ *
+ * One more note, specific to this site: at 27 kWh the pack's 95% round trip is
+ * not a rounding error. It gives back 16.3 kWh and takes 18.2 kWh to do it,
+ * and that 1.9 kWh is a visible share of a $2.68 day. The engine prices it;
+ * the state of charge published here is the engine's own series rather than a
+ * walk of the dispatch, because a lossless walk of these numbers reads 102.8%.
  */
 
 import type { Action, Building } from '@/types/api';
@@ -183,16 +190,18 @@ export const BASELINE_GRID_KW: number[] = gridFromComponents(BASELINE_PARTS);
 /* -------------------------------------------------------------------------- */
 
 /**
- * Action 1. The solver does not park the whole session in one block. It leaves
- * the 18:00 hour on the charger, trims the two hours either side of it, and
- * moves the rest past 22:00. Signed kW against the baseline session, so the
- * deltas cancel and the car still takes its full session.
+ * Action 1. The engine does not park the whole session in one block. It leaves
+ * 17:00 on the charger at full rate -- the pack covers that hour instead --
+ * trims 18:00 and 19:00 hard, and puts the rest back from 20:00 on, finishing
+ * with a full-rate hour at 22:00. Signed kW against the baseline session, so
+ * the deltas cancel and the car still takes its whole charge.
  */
 const EV_DELTA_KW: Record<number, number> = {
-  17: -8.2,
-  19: -7.3,
-  22: +4.0,
-  23: +11.5,
+  18: -7.5,
+  19: -7.2,
+  20: +1.5,
+  21: +1.7,
+  22: +11.5,
 };
 const OPTIMIZED_EV_KW = BASELINE_EV_KW.map((kw, h) => round1(kw + (EV_DELTA_KW[h] ?? 0)));
 
@@ -210,24 +219,33 @@ const EV_PEAK_CUT_KW = round1(
 const EV_SHIFT_SAVINGS_USD = round2(energyCost(BASELINE_EV_KW) - energyCost(OPTIMIZED_EV_KW));
 
 /**
- * Action 2. The pack no longer holds one flat rate. The solver varies it hour
- * by hour: it takes an overnight charge off the $0.09 rate, soaks up the part
- * of the midday surplus that fits, and then discharges into the two hours the
- * charger runs flat out. Signed, so negative is charging.
+ * Action 2. The pack no longer holds one flat rate. The engine varies it hour
+ * by hour: an overnight charge off the $0.09 rate, the part of the midday
+ * surplus that fits, and then discharges into the two hours the charger runs
+ * flat out -- 17:00 and 22:00. Signed, so negative is charging.
+ *
+ * 18.2 kWh in for 16.3 kWh out. On a 27 kWh pack the 95% round trip costs
+ * nearly two kilowatt-hours, which on this site is not a rounding error: it is
+ * most of the difference between the plan saving money and merely moving it.
  */
 const BATTERY_DISPATCH_KW: Record<number, number> = {
-  1: -2.3,
-  4: -4.0,
-  8: -0.5,
-  9: -1.6,
-  10: -2.5,
-  11: -2.4,
-  18: +8.8,
-  20: -1.4,
-  21: -1.6,
-  23: +7.5,
+  0: -4.1,
+  1: -1.3,
+  8: -3.0,
+  9: -2.9,
+  10: -2.8,
+  17: +7.7,
+  18: +1.2,
+  22: +7.4,
+  23: -4.1,
 };
 const OPTIMIZED_BATTERY_KW = zeros().map((kw, h) => round1(kw + (BATTERY_DISPATCH_KW[h] ?? 0)));
+
+/** State of charge as the engine solved it. See the note on OPTIMIZED_PARTS. */
+const OPTIMIZED_SOC = [
+  65, 69.5, 69.5, 69.5, 69.5, 69.5, 69.5, 69.5, 80, 90.2, 100, 100, 100, 100,
+  100, 100, 100, 69.9, 65.1, 65.1, 65.1, 65.1, 36.2, 50.6,
+];
 
 /**
  * Action 3. The solver returned no setpoint change. With the pack under the
@@ -248,7 +266,11 @@ const OPTIMIZED_PARTS: FlowComponents = {
   hvac: OPTIMIZED_HVAC_KW,
   solar: SOLAR_KW,
   battery: OPTIMIZED_BATTERY_KW,
-  soc: socWalk(OPTIMIZED_BATTERY_KW, START_SOC_PCT, RESIDENCE_BUILDING.battery_capacity_kwh),
+  // The engine's own series, not a walk of the dispatch above. On a 27 kWh
+  // pack the 95%-each-way round trip is worth several points of SOC an hour,
+  // so a lossless walk reads 102.8% at midday on a plan the engine capped at
+  // 100%. Transcribed, and checked against the backend by verify-fixtures.
+  soc: OPTIMIZED_SOC,
 };
 
 export const OPTIMIZED_GRID_KW: number[] = gridFromComponents(OPTIMIZED_PARTS);
@@ -297,9 +319,27 @@ const MIN_SOC_PCT = Math.min(...OPTIMIZED_PARTS.soc);
 const BATTERY_DISPATCHED_KWH = round1(
   OPTIMIZED_BATTERY_KW.reduce((sum, kw) => sum + Math.max(0, kw), 0),
 );
-/** The two discharges: 18:00, which is also the largest rate, and 23:00. */
+/** The hours the pack pushes out, in order. */
+const DISCHARGE_HOURS = OPTIMIZED_BATTERY_KW.map((kw, h) => (kw > 0 ? h : -1)).filter(
+  (h) => h >= 0,
+);
+const DISCHARGE_START_HOUR = DISCHARGE_HOURS[0];
+const DISCHARGE_END_HOUR = DISCHARGE_HOURS[DISCHARGE_HOURS.length - 1] + 1;
+/** The two hours that matter: the evening peak, and the late full-rate hour. */
 const PEAK_DISCHARGE_KW = Math.max(...OPTIMIZED_BATTERY_KW);
-const LATE_DISCHARGE_KW = OPTIMIZED_BATTERY_KW[23];
+const PEAK_DISCHARGE_HOUR = OPTIMIZED_BATTERY_KW.indexOf(PEAK_DISCHARGE_KW);
+const LATE_DISCHARGE_HOUR = DISCHARGE_HOURS[DISCHARGE_HOURS.length - 1];
+const LATE_DISCHARGE_KW = OPTIMIZED_BATTERY_KW[LATE_DISCHARGE_HOUR];
+/** kWh the pack takes in, which is more than it gives back. */
+const BATTERY_CHARGED_KWH = round1(
+  OPTIMIZED_BATTERY_KW.reduce((sum, kw) => sum + Math.max(0, -kw), 0),
+);
+/** What each covered hour would read with the pack idle. */
+const uncovered = (h: number): number => round1(OPTIMIZED_GRID_KW[h] + OPTIMIZED_BATTERY_KW[h]);
+/** What the battery takes out of the interval that sets the baseline peak. */
+const BATTERY_PEAK_CUT_KW = round1(OPTIMIZED_BATTERY_KW[BASELINE_PEAK_HOUR]);
+/** Same rule the backend applies: the hours the lever actually moves. */
+const [EV_START_HOUR, EV_END_HOUR] = actionWindow(EV_DELTA_KW);
 /** kWh the pack takes from the midday surplus the house would otherwise export. */
 const BATTERY_SOLAR_CHARGE_KWH = round1(
   OPTIMIZED_BATTERY_KW.reduce(
@@ -318,22 +358,20 @@ const BATTERY_GRID_CHARGE_KWH = round1(
 const HVAC_PEAK_CUT_KW = round1(
   HVAC_KW[BASELINE_PEAK_HOUR] - OPTIMIZED_HVAC_KW[BASELINE_PEAK_HOUR],
 );
-/** What 18:00 would read with the car on the charger and the pack idle. */
-const UNSHAVED_1800_KW = round1(
-  BASE_KW[18] + OPTIMIZED_EV_KW[18] + OPTIMIZED_HVAC_KW[18] - SOLAR_KW[18],
-);
-/** What a late-night hour reads with the charger flat out and the pack idle. */
-const UNSHAVED_CHARGER_HOUR_KW = round1(
-  BASE_KW[23] + EV_CHARGER_KW + HVAC_KW[23] - SOLAR_KW[23],
-);
+/**
+ * What the scripted agent says it ran, and how long it took. Both transcribed
+ * from a real solve: the payload used to claim "CP-SAT" and 912 ms, neither of
+ * which has been true since the MIP engine became the default.
+ */
+const SOLVER_NAME = 'MIP (OR-Tools/SCIP)';
+const SOLVE_TIME_MS = 41;
 
 /** "04:00" -- clock label for an hour index. */
 function hourLabel(h: number): string {
   return String(h).padStart(2, '0') + ':00';
 }
 
-/** Midnight tonight: the end of both the charging session and the dispatch. */
-const MIDNIGHT = '2025-09-19T00:00:00' + TZ_OFFSET;
+/** 07:00 tomorrow: the hour the car has to be ready by. */
 const EV_DEADLINE = '2025-09-19T07:00:00' + TZ_OFFSET;
 
 /* -------------------------------------------------------------------------- */
@@ -346,23 +384,25 @@ export const PLAN_SUMMARY = [
   '20:00. The cause is not the house -- cooking, lights and the heat pump',
   `together come to about 4.4 kW -- it is that an ${EV_CHARGER_KW} kW car charger starts at`,
   '17:30 on top of all of it. Nothing has to be given up. The car is not driven',
-  `until morning, so ${EV_SHIFTED_KWH} kWh of the ${EV_SESSION_KWH} kWh session moves past 22:00 and the`,
-  `charger is held to ${OPTIMIZED_EV_KW[17]} kW at 17:00 and ${OPTIMIZED_EV_KW[19]} kW at 19:00, the hours either`,
-  'side of the peak. The 18:00 hour is the one that cannot move, because',
-  'the car is already on the charger by then, so the two wall batteries -- full',
-  `since 11:00 on today's own solar -- carry it at ${PEAK_DISCHARGE_KW} kW, and they do the same`,
-  `for 23:00 at ${LATE_DISCHARGE_KW} kW. The evening comes out flat: ${OPTIMIZED_GRID_KW[17]} kW at 17:00 and`,
-  `${OPTIMIZED_PEAK_KW} kW every hour from 18:00 to midnight. Billing peak falls from`,
-  `${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, ${CAP_HEADROOM_KW} kW clear of the cap, avoiding about`,
+  `until morning, so ${EV_SHIFTED_KWH} kWh of the ${EV_SESSION_KWH} kWh session moves past 19:00 and`,
+  `the charger is cut to ${OPTIMIZED_EV_KW[18]} kW at 18:00 and ${OPTIMIZED_EV_KW[19]} kW at 19:00.`,
+  `${hourLabel(PEAK_DISCHARGE_HOUR)} is the hour that cannot move -- the car has only just`,
+  'plugged in and the house wants its full rate -- so the two wall batteries, full',
+  `since 10:00 on today's own solar, carry it at ${PEAK_DISCHARGE_KW} kW, and they do the`,
+  `same for ${hourLabel(LATE_DISCHARGE_HOUR)} at ${LATE_DISCHARGE_KW} kW when the session finishes at`,
+  `full rate. The evening comes out perfectly flat: ${OPTIMIZED_PEAK_KW} kW every hour from`,
+  `${hourLabel(PEAK_DISCHARGE_HOUR)} to midnight. Billing peak falls from ${BASELINE_PEAK_KW} kW to`,
+  `${OPTIMIZED_PEAK_KW} kW, ${CAP_HEADROOM_KW} kW clear of the cap, avoiding about`,
   `$${PENALTY_AVOIDED_USD.toFixed(2)} of demand-response penalty on this month's bill; day-ahead`,
-  `energy falls $${SAVINGS_USD.toFixed(2)}, roughly $${MONTHLY_ENERGY_USD.toFixed(2)} over a 30-day month. The pack puts`,
-  `back everything it lends, ${BATTERY_DISPATCHED_KWH} kWh out and ${BATTERY_DISPATCHED_KWH} kWh in before midnight,`,
-  `so it ends the night at ${END_SOC_PCT}% where it started, well above the`,
-  `${RESERVE_FLOOR_PCT}% the owner holds back for outages, and nothing has to be bought back`,
-  'tomorrow. The car takes its full session and is finished by midnight. The',
-  'heat pump keeps its normal schedule: the only thing the plan asks of the',
-  `household is permission to let the house float to ${COMFORT_BAND_F[1]} F between 17:00 and`,
-  '19:00, which the optimizer priced and did not need.',
+  `energy falls $${SAVINGS_USD.toFixed(2)}, roughly $${MONTHLY_ENERGY_USD.toFixed(2)} over a 30-day month. The pack`,
+  `gives back ${BATTERY_DISPATCHED_KWH} kWh and takes ${BATTERY_CHARGED_KWH} kWh to do it -- the`,
+  'gap is the round trip, and on a pack this small it is a real share of the',
+  `saving rather than a rounding error. It still ends the night at ${END_SOC_PCT}% where`,
+  `it started, well above the ${RESERVE_FLOOR_PCT}% the owner holds back for outages, so`,
+  'nothing has to be bought back tomorrow. The car takes its full session and is',
+  'finished by 23:00. The heat pump keeps its normal schedule: the only thing the',
+  `plan asks of the household is permission to let the house float to`,
+  `${COMFORT_BAND_F[1]} F between 17:00 and 19:00, which the optimizer priced and did not need.`,
 ].join(' ');
 
 function buildActions(runId: string): Action[] {
@@ -372,10 +412,10 @@ function buildActions(runId: string): Action[] {
       run_id: runId,
       type: 'ev_charging_shift',
       title: `Move ${EV_SHIFTED_KWH} kWh of the EV session past 22:00`,
-      description: `Spread the ${EV_SESSION_KWH} kWh charge across the evening and the late night rather than slowing it down. The car plugs in at 17:30 but is not driven until the morning, so it has thirteen hours of slack against an 80%-by-07:00 target. ${EV_EVENING_KWH} kWh still lands between 17:00 and 20:00, trimmed to ${OPTIMIZED_EV_KW[17]} kW at 17:00 and ${OPTIMIZED_EV_KW[19]} kW at 19:00 so both hours sit under the cap, and the remaining ${EV_SHIFTED_KWH} kWh runs at 22:00 and 23:00 on the $0.09 overnight rate instead of the $0.16 on-peak one. The ${EV_PEAK_CUT_KW} kW here is measured at 17:00, the hour this action actually empties: 18:00 keeps the charger at its full ${EV_CHARGER_KW} kW and action 2 carries that hour out of storage. The session still finishes by midnight, seven hours before the deadline.`,
-      start_time: isoHour(17),
-      end_time: MIDNIGHT,
-      magnitude: EV_CHARGER_KW,
+      description: `Spread the ${EV_SESSION_KWH} kWh charge across the evening rather than slowing it down. The car plugs in at 17:30 but is not driven until the morning, so it has thirteen hours of slack against an 80%-by-07:00 target. ${EV_EVENING_KWH} kWh still lands between 17:00 and 20:00 -- the charger keeps its full ${EV_CHARGER_KW} kW at 17:00, where the pack covers it, and is cut to ${OPTIMIZED_EV_KW[18]} kW at 18:00 and ${OPTIMIZED_EV_KW[19]} kW at 19:00 so both those hours sit under the cap on their own. The remaining ${EV_SHIFTED_KWH} kWh runs from 20:00 to ${hourLabel(LATE_DISCHARGE_HOUR)}, on the $0.09 overnight rate instead of the $0.16 on-peak one. The ${EV_PEAK_CUT_KW} kW here is measured at ${hourLabel(BASELINE_PEAK_HOUR)}, the interval that sets the baseline peak. The session finishes an hour before midnight, eight hours before the deadline.`,
+      start_time: isoHour(EV_START_HOUR),
+      end_time: isoHour(EV_END_HOUR),
+      magnitude: EV_PEAK_CUT_KW,
       unit: 'kW',
       estimated_peak_reduction_kw: EV_PEAK_CUT_KW,
       estimated_savings_usd: EV_SHIFT_SAVINGS_USD,
@@ -391,13 +431,13 @@ function buildActions(runId: string): Action[] {
       id: 'act-battery-02',
       run_id: runId,
       type: 'battery_discharge',
-      title: `Discharge the pack ${PEAK_DISCHARGE_KW} kW at 18:00 and ${LATE_DISCHARGE_KW} kW at 23:00`,
-      description: `Put storage under the two hours the charger runs flat out. Action 1 cannot empty 18:00, because the car is already plugged in and drawing its full ${EV_CHARGER_KW} kW there, and without this action that hour reads ${UNSHAVED_1800_KW} kW -- the baseline peak, untouched. 23:00 is the same shape once the session moves: ${UNSHAVED_CHARGER_HOUR_KW} kW on an idle pack. Covering both brings each of them to ${OPTIMIZED_PEAK_KW} kW, so the ${PEAK_DISCHARGE_KW} kW figure is measured at the 18:00 baseline peak itself. ${BATTERY_DISPATCHED_KWH} kWh leaves a pack that is full at ${OPTIMIZED_PARTS.soc[11]}% by 11:00, the largest rate is inside the ${RESIDENCE_BUILDING.battery_max_kw} kW inverter rating, and state of charge never drops below ${MIN_SOC_PCT}%, well clear of the ${RESERVE_FLOOR_PCT}% outage reserve. The same ${BATTERY_DISPATCHED_KWH} kWh goes back in before midnight: ${BATTERY_SOLAR_CHARGE_KWH} kWh of it from midday surplus the house would otherwise export, ${BATTERY_GRID_CHARGE_KWH} kWh off the meter at the $0.09 overnight rate. What this action is for is the cap, not the tariff.`,
-      start_time: isoHour(18),
-      end_time: MIDNIGHT,
+      title: `Discharge the pack ${PEAK_DISCHARGE_KW} kW at ${hourLabel(PEAK_DISCHARGE_HOUR)} and ${LATE_DISCHARGE_KW} kW at ${hourLabel(LATE_DISCHARGE_HOUR)}`,
+      description: `Put storage under the two hours the charger runs flat out. Action 1 does not empty ${hourLabel(PEAK_DISCHARGE_HOUR)}: the car has just plugged in and takes its full ${EV_CHARGER_KW} kW, and without this action that hour reads ${uncovered(PEAK_DISCHARGE_HOUR)} kW. ${hourLabel(LATE_DISCHARGE_HOUR)} is the same shape at the other end of the session -- ${uncovered(LATE_DISCHARGE_HOUR)} kW on an idle pack. Covering both brings each of them to ${OPTIMIZED_PEAK_KW} kW. Measured at the ${hourLabel(BASELINE_PEAK_HOUR)} baseline peak this action is worth ${BATTERY_PEAK_CUT_KW} kW, which understates it: the two hours it does carry are the ones that would otherwise set the new peak. ${BATTERY_DISPATCHED_KWH} kWh leaves a pack that is full by 10:00, the largest rate is inside the ${RESIDENCE_BUILDING.battery_max_kw} kW inverter rating, and state of charge never drops below ${MIN_SOC_PCT}%, well clear of the ${RESERVE_FLOOR_PCT}% outage reserve. Putting it back takes ${BATTERY_CHARGED_KWH} kWh, not ${BATTERY_DISPATCHED_KWH}: ${BATTERY_SOLAR_CHARGE_KWH} kWh from midday surplus the house would otherwise export and ${BATTERY_GRID_CHARGE_KWH} kWh off the meter at $0.09, with the difference lost to the 95% round trip each way. What this action is for is the cap, not the tariff.`,
+      start_time: isoHour(DISCHARGE_START_HOUR),
+      end_time: isoHour(DISCHARGE_END_HOUR),
       magnitude: PEAK_DISCHARGE_KW,
       unit: 'kW',
-      estimated_peak_reduction_kw: PEAK_DISCHARGE_KW,
+      estimated_peak_reduction_kw: BATTERY_PEAK_CUT_KW,
       estimated_savings_usd: 0,
       status: 'pending',
       constraints_checked: [
@@ -526,7 +566,7 @@ export const RESIDENCE_SCRIPT = scheduleScript([
   {
     type: 'thinking',
     tool_name: null,
-    message: `One ${EV_CHARGER_KW} kW load with thirteen hours of slack, against a ${RESIDENCE_BUILDING.peak_threshold_kw} kW cap. Moving it is obvious -- but moving it in one block is not sufficient: park the whole session at 22:00 and the meter reads ${UNSHAVED_CHARGER_HOUR_KW} kW there and I have relocated the violation rather than removed it. The car is also already on the charger at 18:00, so some of that hour cannot be moved at all. The pack is full and idle from 11:00, so the right shape is to spread the session across the hours that have room and put storage under the hours that do not. I will hand the optimizer all three resources and let it place them.`,
+    message: `One ${EV_CHARGER_KW} kW load with thirteen hours of slack, against a ${RESIDENCE_BUILDING.peak_threshold_kw} kW cap. Moving it is obvious -- but moving it in one block is not sufficient: park the whole session in any single late hour and the meter reads over ${uncovered(LATE_DISCHARGE_HOUR)} kW there, and I have relocated the violation rather than removed it. The pack is full and idle from 10:00, so the right shape is to spread the session across the hours that have room and put storage under the hours that do not. I will hand the optimizer all three resources and let it place them.`,
     payload: null,
     duration_ms: 1040,
   },
@@ -540,36 +580,37 @@ export const RESIDENCE_SCRIPT = scheduleScript([
       horizon_hours: 24,
       resources: ['battery', 'ev', 'hvac'],
       hard_constraint: 'peak_kw <= ' + RESIDENCE_BUILDING.peak_threshold_kw,
-      solver: 'CP-SAT',
+      solver: SOLVER_NAME,
     },
     duration_ms: null,
   },
   {
     type: 'tool_result',
     tool_name: 'run_schedule_optimizer',
-    message: `Solver returned an optimal schedule in 0.9 s. Peak drops from ${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, a cut of ${PEAK_REDUCTION_KW} kW, and the binding interval moves out of the evening entirely: it is now ${hourLabel(OPTIMIZED_PEAK_HOUR)}, where the pack takes its overnight charge. It did not empty the 18:00 hour -- the car still draws its full ${EV_CHARGER_KW} kW there and the battery covers it at ${PEAK_DISCHARGE_KW} kW -- it flattened the evening instead: ${OPTIMIZED_GRID_KW[17]} kW at 17:00 and ${OPTIMIZED_PEAK_KW} kW every hour from 18:00 to midnight, with ${CAP_HEADROOM_KW} kW of headroom under the cap.`,
+    message: `Solver returned an optimal schedule in ${SOLVE_TIME_MS} ms. Peak drops from ${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, a cut of ${PEAK_REDUCTION_KW} kW, and the binding interval moves out of the evening entirely: it is now ${hourLabel(OPTIMIZED_PEAK_HOUR)}, where the pack takes its overnight charge. It did not empty ${hourLabel(PEAK_DISCHARGE_HOUR)} -- the car draws its full ${EV_CHARGER_KW} kW there and the battery covers it at ${PEAK_DISCHARGE_KW} kW -- it cut the charger at ${hourLabel(BASELINE_PEAK_HOUR)} instead and flattened everything after: ${OPTIMIZED_PEAK_KW} kW every hour from ${hourLabel(PEAK_DISCHARGE_HOUR)} to midnight, with ${CAP_HEADROOM_KW} kW of headroom under the cap.`,
     payload: {
       status: 'OPTIMAL',
-      solve_time_ms: 912,
+      solver: SOLVER_NAME,
+      solve_time_ms: SOLVE_TIME_MS,
       baseline_peak_kw: BASELINE_PEAK_KW,
       optimized_peak_kw: OPTIMIZED_PEAK_KW,
       peak_reduction_kw: PEAK_REDUCTION_KW,
       binding_interval: isoHour(OPTIMIZED_PEAK_HOUR),
       headroom_under_cap_kw: CAP_HEADROOM_KW,
     },
-    duration_ms: 912,
+    duration_ms: SOLVE_TIME_MS,
   },
   {
     type: 'tool_result',
     tool_name: 'validate_schedule',
-    message: `All 11 constraints pass. The meter never exceeds ${OPTIMIZED_PEAK_KW} kW, so the cap holds with ${CAP_HEADROOM_KW} kW to spare. The pack never drops below ${MIN_SOC_PCT}% and ends the night there, comfortably above the ${RESERVE_FLOOR_PCT}% outage reserve, and its largest rate is ${PEAK_DISCHARGE_KW} kW against a ${RESIDENCE_BUILDING.battery_max_kw} kW inverter. The car takes its full ${EV_SESSION_KWH} kWh and is finished by midnight, seven hours before the 07:00 deadline. The heat pump keeps its normal schedule, so the ${COMFORT_BAND_F[1]}°F float is the household's to accept or decline.`,
+    message: `All 11 constraints pass. The meter never exceeds ${OPTIMIZED_PEAK_KW} kW, so the cap holds with ${CAP_HEADROOM_KW} kW to spare. The pack bottoms out at ${MIN_SOC_PCT}% and ends the night back at ${END_SOC_PCT}%, where it started and comfortably above the ${RESERVE_FLOOR_PCT}% outage reserve; its largest rate is ${PEAK_DISCHARGE_KW} kW against a ${RESIDENCE_BUILDING.battery_max_kw} kW inverter. The car takes its full ${EV_SESSION_KWH} kWh and is finished by ${hourLabel(LATE_DISCHARGE_HOUR + 1)}, eight hours before the 07:00 deadline. The heat pump keeps its normal schedule, so the ${COMFORT_BAND_F[1]}°F float is not being asked for at all.`,
     payload: {
       constraints_checked: 11,
       violations: 0,
       max_meter_kw: OPTIMIZED_PEAK_KW,
       battery_end_soc_pct: END_SOC_PCT,
       battery_min_soc_pct: MIN_SOC_PCT,
-      ev_target_met_at: MIDNIGHT,
+      ev_target_met_at: isoHour(LATE_DISCHARGE_HOUR + 1),
       hvac_band_f: COMFORT_BAND_F,
       hvac_schedule_changed: false,
     },
@@ -578,9 +619,9 @@ export const RESIDENCE_SCRIPT = scheduleScript([
   {
     type: 'decision',
     tool_name: 'save_action_plan',
-    message: `Committing a three-action plan: move ${EV_SHIFTED_KWH} kWh of the charging session past 22:00, discharge the pack ${PEAK_DISCHARGE_KW} kW at 18:00 and ${LATE_DISCHARGE_KW} kW at 23:00 to cover the two hours the charger runs flat out, and carry the ${COMFORT_BAND_F[1]}°F evening float as the one item the household has to agree to. Worth about $${PENALTY_AVOIDED_USD.toFixed(2)} of avoided demand-response penalty this month.`,
+    message: `Committing a two-action plan: move ${EV_SHIFTED_KWH} kWh of the charging session past 19:00, and discharge the pack ${PEAK_DISCHARGE_KW} kW at ${hourLabel(PEAK_DISCHARGE_HOUR)} and ${LATE_DISCHARGE_KW} kW at ${hourLabel(LATE_DISCHARGE_HOUR)} to cover the two hours the charger runs flat out. The ${COMFORT_BAND_F[1]}°F evening float was priced and not needed, so the household is not asked for it and the row is dropped. Worth about $${PENALTY_AVOIDED_USD.toFixed(2)} of avoided demand-response penalty this month.`,
     payload: {
-      action_count: 3,
+      action_count: 2,
       plan_savings_usd: SAVINGS_USD,
       penalty_avoided_usd: PENALTY_AVOIDED_USD,
     },
@@ -590,8 +631,8 @@ export const RESIDENCE_SCRIPT = scheduleScript([
     type: 'tool_call',
     tool_name: 'request_human_approval',
     message:
-      'Two of the three actions are invisible to the household, but letting the house run to 76°F between 17:00 and 19:00 is not, and neither is deciding when somebody else’s car charges. Sending all three to the owner.',
-    payload: { requires_approval: true, action_count: 3, approvers: ['homeowner'] },
+      'Neither action touches comfort -- the 76°F float was priced and not needed, so the household is never asked for it -- but deciding when somebody else’s car charges is still not mine to decide. Sending both to the owner.',
+    payload: { requires_approval: true, action_count: 2, approvers: ['homeowner'] },
     duration_ms: null,
   },
   {
