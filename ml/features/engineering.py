@@ -130,3 +130,62 @@ def create_features(source, base_temp_c: float = BASE_TEMP_C):
     y = frame[TARGET]
     timestamps = frame["timestamp"]
     return X, y, timestamps
+
+def get_feature_groups(frame: pd.DataFrame) -> dict[str, list[str]]:
+    """Return reusable feature groups for ablation/evaluation."""
+    all_features = feature_columns(frame)
+
+    lag_features = [
+        c for c in all_features
+        if c.startswith("load_lag_")
+    ]
+
+    rolling_features = [
+        c for c in all_features
+        if c.startswith("rolling_")
+    ]
+
+    calendar_names = {
+        "hour",
+        "day_of_week",
+        "day_of_year",
+        "month",
+        "is_weekend",
+        "hour_sin",
+        "hour_cos",
+        "dow_sin",
+        "dow_cos",
+    }
+
+    calendar_features = [
+        c for c in all_features
+        if c in calendar_names
+    ]
+
+    weather_names = {
+        "temperature_c",
+        "humidity_pct",
+        "wind_speed_mps",
+        "temperature_squared",
+        "heating_degree",
+        "cooling_degree",
+    }
+
+    weather_features = [
+        c for c in all_features
+        if c in weather_names
+    ]
+
+    return {
+        "lags_only": lag_features,
+        "lags_rolling": (
+            lag_features
+            + rolling_features
+        ),
+        "lags_rolling_calendar": (
+            lag_features
+            + rolling_features
+            + calendar_features
+        ),
+        "full_features": all_features,
+    }
