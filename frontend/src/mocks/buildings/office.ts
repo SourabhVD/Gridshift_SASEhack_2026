@@ -1,37 +1,46 @@
 /**
  * sea-office-001 -- Cascade Commerce Center (the default building).
  *
- * This is the original GridShift demo, unchanged: same 24-hour curves, same
- * 14-event script, same three actions, same dollar figures. The only thing
- * added here is the flow breakdown behind each hour, back-solved from the
- * published curves so `flows.grid_kw` is exactly `predicted_load_kw` and
- * `optimized_flows.grid_kw` is exactly `optimized_kw`.
+ * The baseline is the original published forecast, untouched. The optimized
+ * side is the CP-SAT schedule the backend now returns, which is a different
+ * animal from the old heuristic: instead of shaving the 15:00 spike it
+ * flattens the whole day onto one plateau, and it varies the battery rate
+ * hour by hour rather than holding a flat block.
  *
- * How the optimized flows reconcile with the pinned optimized curve:
+ * Nothing here is authored as a curve. The optimized grid is derived from the
+ * dispatch components, so an action's kW really is what moves the line:
  *
- *   hour   battery    EV                     HVAC          net vs baseline
- *   11,12       0     -                      +24 / +18     +24 / +18  pre-cool
- *   13          0     -                      -22           -22        coasting
- *   14      +90 kW    69 -> 23 kW (-46)      -14           -150
- *   15      +90 kW    69 -> 23 kW (-46)      -18           -154
- *   16      +90 kW    -                      -              -90
- *   18,19       0     0 -> 46 kW (+46)       -             +46 / +46  shifted
+ *   hour   battery                EV                 net vs baseline
+ *   07     -90 kW (charging)      -                  +90   fill the pack
+ *   10-12   0                     69 -> 45.3/37.3/23.3  -23.7/-31.7/-45.7
+ *   13-15  +16.7/+54.7/+80.7      69 -> 0            deep into the peak
+ *   16-18  +138.7/+63.7/+19.7     0                  taper off
+ *   19      0                     0 -> 33.1          charging restarts
+ *   20-23  -17.3/-60.3/-93.3/-113.3   0 -> 69/69/69/68   refill + EV
  *
- * base_kw comes out identical between the two curves, which is the point: no
- * action in this plan changes what the building actually needs, only when and
- * from where it is served.
+ * HVAC does not move at all: the solver was offered the two-hour setpoint
+ * drift and did not need it. base_kw is identical between the two curves,
+ * which is the point -- no action changes what the building needs, only when
+ * and from where it is served.
  */
 
 import type { Action, Building } from '@/types/api';
 import {
+  DEMAND_CHARGE_USD_PER_KW,
   NOW_HOUR,
+  PRICE_PER_KWH,
+  TZ_OFFSET,
   type FlowComponents,
   baseFromGrid,
+  energyCost,
   flat,
+  gridFromComponents,
   hvacProfile,
   isoHour,
   makeFixture,
   range,
+  round1,
+  round2,
   scheduleScript,
   socWalk,
   withHours,
@@ -56,7 +65,7 @@ export const OFFICE_BUILDING: Building = {
 };
 
 /* -------------------------------------------------------------------------- */
-/* Published curves (unchanged)                                                */
+/* Published curves (baseline, unchanged)                                      */
 /* -------------------------------------------------------------------------- */
 
 /** ML forecast. Peak 522 kW at 15:00; over 450 kW for 13:00-17:00 (4 hours). */
@@ -77,17 +86,16 @@ export const SOLAR_KW: number[] = [
   27.4, 14.2, 4.6, 0, 0, 0, 0, 0,
 ];
 
-/** Optimizer output. New peak is 438 kW at 18:00, set by the shifted EV load. */
-export const OPTIMIZED_LOAD_KW: number[] = [
-  182, 178, 174, 172, 176, 188, 221, 274, 328, 372, 396, 428, 436, 436, 346,
-  368, 421, 436, 438, 384, 286, 243, 210, 191,
-];
-
-/** kWh used to recharge the battery overnight at the off-peak rate. */
-export const BATTERY_RECHARGE_KWH = 270;
+/**
+ * kWh the pack has to buy back outside the modelled day. The solver keeps the
+ * whole cycle inside the 24 hours -- a charge at 07:00 and a taper from 20:00
+ * to midnight, both on the off-peak rate -- so there is nothing left to bill
+ * separately and the optimized cost is just the optimized curve.
+ */
+export const BATTERY_RECHARGE_KWH = 0;
 
 /* -------------------------------------------------------------------------- */
-/* Flow breakdown                                                              */
+/* Baseline flow breakdown                                                     */
 /* -------------------------------------------------------------------------- */
 
 /** Six bays at 11.5 kW share a 69 kW site allocation, 09:00-16:00. */
@@ -104,6 +112,8 @@ const BASELINE_HVAC = hvacProfile(BASELINE_LOAD_KW, {
 
 const BASELINE_BATTERY = zeros();
 
+const START_SOC_PCT = 82;
+
 const BASELINE_PARTS: FlowComponents = {
   base: baseFromGrid(BASELINE_LOAD_KW, {
     ev: BASELINE_EV,
@@ -115,55 +125,184 @@ const BASELINE_PARTS: FlowComponents = {
   hvac: BASELINE_HVAC,
   solar: SOLAR_KW,
   battery: BASELINE_BATTERY,
-  soc: flat(82),
+  soc: flat(START_SOC_PCT),
 };
 
-/** 90 kW out of the pack for the three core peak hours; idle the rest of the day. */
-const OPTIMIZED_BATTERY = withHours(zeros(), range(14, 17), 90);
+/* -------------------------------------------------------------------------- */
+/* Optimized dispatch                                                          */
+/* -------------------------------------------------------------------------- */
 
-/** Four fleet vans leave 14:00-16:00 and re-appear, on faster chargers, at 18:00. */
-const OPTIMIZED_EV = withHours(
-  withHours(BASELINE_EV, range(14, 16), 2 * EV_CHARGER_KW),
-  range(18, 20),
-  4 * EV_CHARGER_KW,
-);
-
-/** Pre-cool, coast, then let the setpoint float through the two worst hours. */
-const HVAC_DELTA_KW: Record<number, number> = {
-  11: +24,
-  12: +18,
-  13: -22,
-  14: -14,
-  15: -18,
+/**
+ * The solver's battery schedule, hour to hour. Signed the way the flow
+ * identity expects: positive discharges into the building, negative charges
+ * from the grid. A flat helper cannot express this any more -- the rate moves
+ * every hour of the discharge.
+ */
+const BATTERY_KW_BY_HOUR: Record<number, number> = {
+  7: -90,
+  13: +16.7,
+  14: +54.7,
+  15: +80.7,
+  16: +138.7,
+  17: +63.7,
+  18: +19.7,
+  20: -17.3,
+  21: -60.3,
+  22: -93.3,
+  23: -113.3,
 };
+const OPTIMIZED_BATTERY = zeros().map((kw, h) => kw + (BATTERY_KW_BY_HOUR[h] ?? 0));
+
+/**
+ * EV charging backs off through the late morning, stops outright for the peak,
+ * and restarts at 19:00 once the site has room for it again.
+ */
+const EV_DELTA_KW: Record<number, number> = {
+  10: -23.7,
+  11: -31.7,
+  12: -45.7,
+  13: -69,
+  14: -69,
+  15: -69,
+  19: +33.1,
+  20: +69,
+  21: +69,
+  22: +69,
+  23: +68,
+};
+const OPTIMIZED_EV = BASELINE_EV.map((kw, h) => round1(kw + (EV_DELTA_KW[h] ?? 0)));
+
+/** Empty on purpose: the solver left every setpoint where it found it. */
+const HVAC_DELTA_KW: Record<number, number> = {};
 const OPTIMIZED_HVAC = BASELINE_HVAC.map((kw, h) => kw + (HVAC_DELTA_KW[h] ?? 0));
 
+const OPTIMIZED_SOC = socWalk(
+  OPTIMIZED_BATTERY,
+  START_SOC_PCT,
+  OFFICE_BUILDING.battery_capacity_kwh,
+);
+
 const OPTIMIZED_PARTS: FlowComponents = {
-  // Replaced by makeFixture: the pinned optimized curve re-solves base_kw.
+  // No action changes what the building needs, so base_kw is the baseline's.
   base: BASELINE_PARTS.base,
   ev: OPTIMIZED_EV,
   hvac: OPTIMIZED_HVAC,
   solar: SOLAR_KW,
   battery: OPTIMIZED_BATTERY,
-  soc: socWalk(OPTIMIZED_BATTERY, 82, OFFICE_BUILDING.battery_capacity_kwh),
+  soc: OPTIMIZED_SOC,
 };
+
+/** Optimizer output, derived from the dispatch above rather than authored. */
+export const OPTIMIZED_LOAD_KW: number[] = gridFromComponents(OPTIMIZED_PARTS);
+
+/* -------------------------------------------------------------------------- */
+/* Headline numbers -- computed once, reused by the prose and the actions      */
+/* -------------------------------------------------------------------------- */
+
+const BASELINE_PEAK_KW = Math.max(...BASELINE_LOAD_KW);
+const BASELINE_PEAK_HOUR = BASELINE_LOAD_KW.indexOf(BASELINE_PEAK_KW);
+const OPTIMIZED_PEAK_KW = Math.max(...OPTIMIZED_LOAD_KW);
+const PEAK_REDUCTION_KW = round1(BASELINE_PEAK_KW - OPTIMIZED_PEAK_KW);
+const OVER_THRESHOLD_KW = round1(
+  BASELINE_PEAK_KW - OFFICE_BUILDING.peak_threshold_kw,
+);
+const HOURS_OVER_THRESHOLD = BASELINE_LOAD_KW.filter(
+  (kw) => kw > OFFICE_BUILDING.peak_threshold_kw,
+).length;
+
+const BASELINE_COST_USD = round2(energyCost(BASELINE_LOAD_KW));
+const OPTIMIZED_COST_USD = round2(
+  energyCost(OPTIMIZED_LOAD_KW) + BATTERY_RECHARGE_KWH * PRICE_PER_KWH[0],
+);
+const SAVINGS_USD = round2(BASELINE_COST_USD - OPTIMIZED_COST_USD);
+const DEMAND_CHARGE_AVOIDED_USD = round2(
+  PEAK_REDUCTION_KW * DEMAND_CHARGE_USD_PER_KW,
+);
+
+/** Hours the pack is pushing out, in order. 13:00 through 18:00. */
+const DISCHARGE_HOURS = OPTIMIZED_BATTERY.map((kw, h) => (kw > 0 ? h : -1)).filter(
+  (h) => h >= 0,
+);
+const DISCHARGE_START_HOUR = DISCHARGE_HOURS[0];
+const DISCHARGE_END_HOUR = DISCHARGE_HOURS[DISCHARGE_HOURS.length - 1] + 1;
+const DISCHARGE_FIRST_KW = OPTIMIZED_BATTERY[DISCHARGE_START_HOUR];
+const BATTERY_PEAK_KW = Math.max(...OPTIMIZED_BATTERY);
+const BATTERY_PEAK_HOUR = OPTIMIZED_BATTERY.indexOf(BATTERY_PEAK_KW);
+const BATTERY_PRECHARGE_KW = round1(-OPTIMIZED_BATTERY[7]);
+const BATTERY_KWH = round1(
+  OPTIMIZED_BATTERY.reduce((sum, kw) => sum + Math.max(kw, 0), 0),
+);
+const MIN_SOC_PCT = Math.min(...OPTIMIZED_SOC);
+const END_SOC_PCT = OPTIMIZED_SOC[OPTIMIZED_SOC.length - 1];
+const RESERVE_FLOOR_PCT = 20;
+
+/** The evening EV block runs to the end of the day, so it closes here. */
+const MIDNIGHT = '2025-09-19T00:00:00' + TZ_OFFSET;
+
+const EV_SHIFTED_KWH = round1(
+  OPTIMIZED_EV.reduce((sum, kw, h) => sum + Math.max(kw - BASELINE_EV[h], 0), 0),
+);
+
+/**
+ * What each lever takes out of the BASELINE peak interval, which is what
+ * Action.estimated_peak_reduction_kw means. Here the three add up to
+ * PEAK_REDUCTION_KW exactly, because the optimized curve sits on its own peak
+ * at 15:00 as well.
+ */
+const BATTERY_PEAK_CUT_KW = round1(OPTIMIZED_BATTERY[BASELINE_PEAK_HOUR]);
+const EV_PEAK_CUT_KW = round1(
+  BASELINE_EV[BASELINE_PEAK_HOUR] - OPTIMIZED_EV[BASELINE_PEAK_HOUR],
+);
+const HVAC_PEAK_CUT_KW = round1(
+  BASELINE_HVAC[BASELINE_PEAK_HOUR] - OPTIMIZED_HVAC[BASELINE_PEAK_HOUR],
+);
+
+/**
+ * Where the day-ahead energy saving comes from. Each lever is priced against
+ * the baseline at the tariff, so the three add up to SAVINGS_USD exactly.
+ */
+const BATTERY_SAVINGS_USD = round2(
+  OPTIMIZED_BATTERY.reduce((sum, kw, h) => sum + kw * PRICE_PER_KWH[h], 0),
+);
+const EV_SAVINGS_USD = round2(
+  BASELINE_EV.reduce(
+    (sum, kw, h) => sum + (kw - OPTIMIZED_EV[h]) * PRICE_PER_KWH[h],
+    0,
+  ),
+);
+const HVAC_SAVINGS_USD = round2(
+  BASELINE_HVAC.reduce(
+    (sum, kw, h) => sum + (kw - OPTIMIZED_HVAC[h]) * PRICE_PER_KWH[h],
+    0,
+  ),
+);
 
 /* -------------------------------------------------------------------------- */
 /* Plan                                                                        */
 /* -------------------------------------------------------------------------- */
 
 export const PLAN_SUMMARY = [
-  "Today's forecast peaks at 522 kW at 15:00, 72 kW above the 450 kW threshold,",
-  'and stays over it for four hours. No single resource covers that gap, so the',
-  'plan stacks three: the battery carries 90 kW through the 14:00-17:00 core,',
-  'four of the six EV sessions move to the evening where they have deadline',
-  'slack, and an 11:00-13:00 pre-cool lets the HVAC setpoint float to 75°F',
-  'during the worst two hours without leaving the comfort band. Together they',
-  'cut the billing peak from 522 kW to 438 kW. Day-ahead energy cost falls only',
-  '$22.22 once the overnight battery recharge is paid back -- the real prize is',
-  'the demand charge, where an 84 kW lower peak avoids about $714.00 on this',
-  "month's bill at $8.50/kW. The HVAC action is the only one occupants can",
-  'feel, which is why this plan is routed for approval rather than dispatched.',
+  `Today's forecast peaks at ${BASELINE_PEAK_KW} kW at 15:00, ${OVER_THRESHOLD_KW} kW`,
+  `above the ${OFFICE_BUILDING.peak_threshold_kw} kW threshold, and stays over it for`,
+  `${HOURS_OVER_THRESHOLD} hours. The optimizer does not shave that spike so much as`,
+  `flatten the day: from 10:00 to midnight the meter holds ${OPTIMIZED_PEAK_KW} kW`,
+  'every hour but 19:00, which comes in a shade under. Two levers do the work.',
+  `The battery takes a ${BATTERY_PRECHARGE_KW} kW charge at 07:00 to reach 100%, then`,
+  `carries the afternoon, ramping from ${DISCHARGE_FIRST_KW} kW at`,
+  `${DISCHARGE_START_HOUR}:00 to ${BATTERY_PEAK_KW} kW at ${BATTERY_PEAK_HOUR}:00 and`,
+  `tapering out after 18:00, for ${BATTERY_KWH} kWh out of the`,
+  `${OFFICE_BUILDING.battery_capacity_kwh} kWh pack. The six EV bays back off through`,
+  'the late morning, sit idle from 13:00 to 19:00, and take the',
+  `${EV_SHIFTED_KWH} kWh back between 19:00 and midnight, which is also when the pack`,
+  'refills. HVAC never moves; the solver was offered the setpoint float and did',
+  `not need it. The billing peak falls from ${BASELINE_PEAK_KW} kW to`,
+  `${OPTIMIZED_PEAK_KW} kW, a ${PEAK_REDUCTION_KW} kW cut worth about`,
+  `$${DEMAND_CHARGE_AVOIDED_USD.toFixed(2)} on this month's demand charge at`,
+  `$${DEMAND_CHARGE_USD_PER_KW.toFixed(2)}/kW, with $${SAVINGS_USD.toFixed(2)} of`,
+  `day-ahead energy saved on top. The pack ends the day at ${END_SOC_PCT}%, near where`,
+  `it started. This still goes to a human because it runs the pack down to`,
+  `${MIN_SOC_PCT}% and holds every EV bay off for six hours in the middle of a`,
+  'working day.',
 ].join(' ');
 
 function buildActions(runId: string): Action[] {
@@ -172,15 +311,14 @@ function buildActions(runId: string): Action[] {
       id: 'act-battery-01',
       run_id: runId,
       type: 'battery_discharge',
-      title: 'Discharge battery at 90 kW, 14:00-17:00',
-      description:
-        'Dispatch 270 kWh from the 500 kWh pack across the three core peak hours, taking SOC from 82% to 28% and staying clear of the 20% reserve floor. Recharges overnight at the $0.09/kWh off-peak rate.',
-      start_time: isoHour(14),
-      end_time: isoHour(17),
-      magnitude: 90,
+      title: `Discharge battery up to ${BATTERY_PEAK_KW} kW, 13:00-19:00`,
+      description: `Dispatch ${BATTERY_KWH} kWh from the ${OFFICE_BUILDING.battery_capacity_kwh} kWh pack across six hours, starting at ${DISCHARGE_FIRST_KW} kW at ${DISCHARGE_START_HOUR}:00, deepening to ${BATTERY_PEAK_KW} kW at ${BATTERY_PEAK_HOUR}:00 and tapering to ${OPTIMIZED_BATTERY[18]} kW by 18:00. That is well inside the ${OFFICE_BUILDING.battery_max_kw} kW inverter. To pay for it the pack takes a ${BATTERY_PRECHARGE_KW} kW charge at 07:00 and refills from 20:00 to midnight, both at the $0.09/kWh off-peak rate, so SOC runs ${START_SOC_PCT}% up to 100%, down to ${MIN_SOC_PCT}% and back to ${END_SOC_PCT}% without ever touching the ${RESERVE_FLOOR_PCT}% reserve floor.`,
+      start_time: isoHour(DISCHARGE_START_HOUR),
+      end_time: isoHour(DISCHARGE_END_HOUR),
+      magnitude: BATTERY_PEAK_KW,
       unit: 'kW',
-      estimated_peak_reduction_kw: 90,
-      estimated_savings_usd: 18.9,
+      estimated_peak_reduction_kw: BATTERY_PEAK_CUT_KW,
+      estimated_savings_usd: BATTERY_SAVINGS_USD,
       status: 'pending',
       constraints_checked: [
         'soc_reserve_floor_20pct',
@@ -193,20 +331,19 @@ function buildActions(runId: string): Action[] {
       id: 'act-ev-02',
       run_id: runId,
       type: 'ev_charging_shift',
-      title: 'Shift 4 of 6 EV sessions to 18:00-20:00',
-      description:
-        'Move 92 kWh of fleet-van charging (4 sessions at 11.5 kW) out of the 14:00-16:00 window. Those vans only need 80% by 22:00, while the two staff vehicles departing at 18:00 keep their current schedule. Energy cost is unchanged because both windows are on-peak -- this action exists purely to take load out of the peak-setting interval.',
-      start_time: isoHour(18),
-      end_time: isoHour(20),
-      magnitude: 46,
+      title: `Shift ${EV_SHIFTED_KWH} kWh of EV charging into 19:00-00:00`,
+      description: `Taper the six bays down from the ${6 * EV_CHARGER_KW} kW site allocation through the late morning, hold them at zero from 13:00 to 19:00, then bring them back at 19:00 and run at full allocation from 20:00 to midnight. Total energy delivered is unchanged, and every session still reaches 80% before its own deadline. This takes ${EV_PEAK_CUT_KW} kW straight out of the peak-setting hours, and because most of the shifted charging now lands after 20:00 it moves from the $0.16/kWh on-peak rate to $0.09/kWh.`,
+      start_time: isoHour(19),
+      end_time: MIDNIGHT,
+      magnitude: 6 * EV_CHARGER_KW,
       unit: 'kW',
-      estimated_peak_reduction_kw: 46,
-      estimated_savings_usd: 0,
+      estimated_peak_reduction_kw: EV_PEAK_CUT_KW,
+      estimated_savings_usd: EV_SAVINGS_USD,
       status: 'pending',
       constraints_checked: [
         'ev_target_soc_80pct_met',
         'deadline_1800_respected_for_2_departing',
-        'deadline_2200_respected_for_4_fleet',
+        'deadline_0000_respected_for_4_fleet',
         'site_charger_limit_69kw',
       ],
     },
@@ -214,15 +351,14 @@ function buildActions(runId: string): Action[] {
       id: 'act-hvac-03',
       run_id: runId,
       type: 'hvac_setpoint',
-      title: 'Pre-cool 11:00-13:00, then float setpoint +3°F',
-      description:
-        'Drop to 70°F from 11:00 to 13:00 to bank thermal mass, then let the setpoint rise from 72°F to 75°F for the 14:00-16:00 peak. Drift is capped at the permitted two hours and stays inside the 68-75°F occupied comfort band.',
+      title: 'Hold the HVAC setpoint at 72°F, no drift today',
+      description: `The optimizer had the usual two-hour float to 75°F available and did not use it. With the battery and the EV shift already holding the day at or under ${OPTIMIZED_PEAK_KW} kW, spending occupant comfort buys nothing, so nothing is sent to the air handlers and the occupied band is never approached. The entry stays in the plan so the lever is on the record and can be called for if the afternoon runs hotter than the forecast.`,
       start_time: isoHour(14),
       end_time: isoHour(16),
-      magnitude: 3,
+      magnitude: 0,
       unit: '°F',
-      estimated_peak_reduction_kw: 18,
-      estimated_savings_usd: 3.32,
+      estimated_peak_reduction_kw: HVAC_PEAK_CUT_KW,
+      estimated_savings_usd: HVAC_SAVINGS_USD,
       status: 'pending',
       constraints_checked: [
         'zone_temp_max_75f',
@@ -235,7 +371,7 @@ function buildActions(runId: string): Action[] {
 }
 
 /* -------------------------------------------------------------------------- */
-/* Agent script                                                                */
+/* Agent script                                                               */
 /* -------------------------------------------------------------------------- */
 
 export const OFFICE_SCRIPT = scheduleScript([
@@ -257,13 +393,12 @@ export const OFFICE_SCRIPT = scheduleScript([
   {
     type: 'tool_result',
     tool_name: 'get_energy_forecast',
-    message:
-      'Peak confirmed: 522 kW at 15:00, 72 kW over the 450 kW threshold. The building stays above threshold for four consecutive hours, 13:00 through 17:00.',
+    message: `Peak confirmed: ${BASELINE_PEAK_KW} kW at 15:00, ${OVER_THRESHOLD_KW} kW over the ${OFFICE_BUILDING.peak_threshold_kw} kW threshold. The building stays above threshold for ${HOURS_OVER_THRESHOLD} consecutive hours, 13:00 through 17:00.`,
     payload: {
-      peak_kw: 522,
+      peak_kw: BASELINE_PEAK_KW,
       peak_time: isoHour(15),
-      threshold_kw: 450,
-      hours_over_threshold: 4,
+      threshold_kw: OFFICE_BUILDING.peak_threshold_kw,
+      hours_over_threshold: HOURS_OVER_THRESHOLD,
       first_exceedance: isoHour(13),
     },
     duration_ms: 840,
@@ -277,21 +412,20 @@ export const OFFICE_SCRIPT = scheduleScript([
       off_peak_usd_per_kwh: 0.09,
       on_peak_usd_per_kwh: 0.16,
       on_peak_window: '14:00-20:00',
-      demand_charge_usd_per_kw: 8.5,
+      demand_charge_usd_per_kw: DEMAND_CHARGE_USD_PER_KW,
     },
     duration_ms: 310,
   },
   {
     type: 'tool_result',
     tool_name: 'get_battery_state',
-    message:
-      'Battery is at 82% SOC, 410 kWh available against a 500 kWh pack and a 250 kW inverter. A 20% reserve floor is contractual, so 310 kWh is genuinely dispatchable today.',
+    message: `Battery is at ${START_SOC_PCT}% SOC, 410 kWh available against a ${OFFICE_BUILDING.battery_capacity_kwh} kWh pack and a ${OFFICE_BUILDING.battery_max_kw} kW inverter. A ${RESERVE_FLOOR_PCT}% reserve floor is contractual, so 310 kWh is dispatchable as things stand, and more than that if the pack is topped up first.`,
     payload: {
-      soc_pct: 82,
-      capacity_kwh: 500,
+      soc_pct: START_SOC_PCT,
+      capacity_kwh: OFFICE_BUILDING.battery_capacity_kwh,
       available_kwh: 410,
-      max_discharge_kw: 250,
-      reserve_floor_pct: 20,
+      max_discharge_kw: OFFICE_BUILDING.battery_max_kw,
+      reserve_floor_pct: RESERVE_FLOOR_PCT,
       dispatchable_kwh: 310,
     },
     duration_ms: 260,
@@ -300,13 +434,13 @@ export const OFFICE_SCRIPT = scheduleScript([
     type: 'tool_result',
     tool_name: 'get_ev_requirements',
     message:
-      'Six EVs are plugged in. Two are staff vehicles departing at 18:00 and must reach 80% by then; the other four are fleet vans that only need 80% by 22:00. Those four are movable.',
+      'Six EVs are plugged in. Two are staff vehicles departing at 18:00 and must reach 80% by then; the other four are fleet vans that sit on the lot overnight and only need 80% by the first run tomorrow. Those four are movable.',
     payload: {
       sessions_connected: 6,
       flexible_sessions: 4,
       locked_sessions: 2,
       target_soc_pct: 80,
-      deadlines: { departing: isoHour(18), fleet: isoHour(22) },
+      deadlines: { departing: isoHour(18), fleet: MIDNIGHT },
       charger_power_kw_each: EV_CHARGER_KW,
     },
     duration_ms: 290,
@@ -328,8 +462,7 @@ export const OFFICE_SCRIPT = scheduleScript([
   {
     type: 'thinking',
     tool_name: null,
-    message:
-      'I have three levers: 310 kWh of battery, four movable EV sessions, and a two-hour HVAC drift. None of them alone covers 72 kW for four hours, so I will hand all three to the optimizer together rather than guess at a split.',
+    message: `I have three levers: a 500 kWh pack I can top up before the peak, six EV sessions with deadline slack, and a two-hour HVAC drift. None of them alone covers ${OVER_THRESHOLD_KW} kW for ${HOURS_OVER_THRESHOLD} hours, so I will hand all three to the optimizer together rather than guess at a split.`,
     payload: null,
     duration_ms: 1100,
   },
@@ -349,46 +482,43 @@ export const OFFICE_SCRIPT = scheduleScript([
   {
     type: 'tool_result',
     tool_name: 'run_schedule_optimizer',
-    message:
-      'Solver returned an optimal schedule in 2.3 s. Peak drops from 522 kW to 438 kW, an 84 kW cut. Note the new peak is set by 18:00, not 15:00 -- the shifted EV load becomes the binding interval, so shedding harder at 15:00 would not help.',
+    message: `Solver returned an optimal schedule in 2.3 s. Peak drops from ${BASELINE_PEAK_KW} kW to ${OPTIMIZED_PEAK_KW} kW, a ${PEAK_REDUCTION_KW} kW cut. It did not shave 15:00, it levelled the day: every hour from 10:00 on sits on the same ${OPTIMIZED_PEAK_KW} kW ceiling, so there is no single interval left to attack.`,
     payload: {
       status: 'OPTIMAL',
       solve_time_ms: 2312,
-      baseline_peak_kw: 522,
-      optimized_peak_kw: 438,
-      peak_reduction_kw: 84,
-      binding_interval: isoHour(18),
+      baseline_peak_kw: BASELINE_PEAK_KW,
+      optimized_peak_kw: OPTIMIZED_PEAK_KW,
+      peak_reduction_kw: PEAK_REDUCTION_KW,
+      binding_interval: isoHour(OPTIMIZED_LOAD_KW.indexOf(OPTIMIZED_PEAK_KW)),
     },
     duration_ms: 2312,
   },
   {
     type: 'tool_result',
     tool_name: 'validate_schedule',
-    message:
-      'All 12 constraints pass. Battery ends the window at 28% SOC, above the 20% floor. Every EV still reaches 80% before its own deadline. HVAC drift is exactly two hours and tops out at 75°F.',
+    message: `All 12 constraints pass. The battery bottoms out at ${MIN_SOC_PCT}% SOC, above the ${RESERVE_FLOOR_PCT}% floor, and is back to ${END_SOC_PCT}% by midnight. Every EV still reaches 80% before its own deadline. HVAC never leaves 72°F, so there is no drift to check.`,
     payload: {
       constraints_checked: 12,
       violations: 0,
-      battery_end_soc_pct: 28,
+      battery_min_soc_pct: MIN_SOC_PCT,
+      battery_end_soc_pct: END_SOC_PCT,
       ev_deadlines_met: 6,
-      hvac_max_temp_f: 75,
-      hvac_drift_hours: 2,
+      hvac_max_temp_f: 72,
+      hvac_drift_hours: 0,
     },
     duration_ms: 180,
   },
   {
     type: 'decision',
     tool_name: 'save_action_plan',
-    message:
-      'Committing a three-action plan: discharge the battery at 90 kW from 14:00 to 17:00, move four EV sessions to the evening, and pre-cool then let the setpoint float 3°F during the peak.',
-    payload: { action_count: 3, plan_savings_usd: 22.22 },
+    message: `Committing a three-action plan: run the battery from 13:00 to 19:00, peaking at ${BATTERY_PEAK_KW} kW, move ${EV_SHIFTED_KWH} kWh of EV charging into the evening, and leave the HVAC setpoint alone.`,
+    payload: { action_count: 3, plan_savings_usd: SAVINGS_USD },
     duration_ms: 150,
   },
   {
     type: 'tool_call',
     tool_name: 'request_human_approval',
-    message:
-      'The HVAC action changes occupant comfort, so this plan needs a human. Sending all three actions to the facility manager for approval.',
+    message: `This takes the pack down to ${MIN_SOC_PCT}% and holds all six EV bays off from 13:00 to 19:00, so it needs a human. Sending all three actions to the facility manager for approval.`,
     payload: { requires_approval: true, action_count: 3 },
     duration_ms: null,
   },
@@ -398,9 +528,9 @@ export const OFFICE_SCRIPT = scheduleScript([
     message:
       'Investigation complete in 16.8 s. Plan is ready for review; nothing will be dispatched until it is approved.',
     payload: {
-      peak_reduction_kw: 84,
-      savings_usd: 22.22,
-      demand_charge_avoided_usd: 714,
+      peak_reduction_kw: PEAK_REDUCTION_KW,
+      savings_usd: SAVINGS_USD,
+      demand_charge_avoided_usd: DEMAND_CHARGE_AVOIDED_USD,
     },
     duration_ms: null,
   },
@@ -413,12 +543,11 @@ export const officeFixture = makeFixture({
   baselineGrid: BASELINE_LOAD_KW,
   baselineParts: BASELINE_PARTS,
   optimizedParts: OPTIMIZED_PARTS,
-  pinnedOptimizedGrid: OPTIMIZED_LOAD_KW,
   actualLoadKw: ACTUAL_LOAD_KW,
   batteryRechargeKwh: BATTERY_RECHARGE_KWH,
   summary: {
     current_load_kw: BASELINE_LOAD_KW[NOW_HOUR],
-    battery_soc_pct: 82,
+    battery_soc_pct: START_SOC_PCT,
     solar_generation_kw: SOLAR_KW[NOW_HOUR],
     ev_connected: 6,
     hvac_setpoint_f: 72,
