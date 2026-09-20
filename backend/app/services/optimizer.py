@@ -867,6 +867,12 @@ def solve(fixture: "BuildingFixture") -> OptimizationResult:
     """
     from ..config import get_settings  # noqa: PLC0415 - avoids an import cycle
 
-    if get_settings().optimizer_mode == "heuristic":
+    mode = get_settings().optimizer_mode
+    if mode == "heuristic":
         return optimize(fixture)
-    return solve_with_ortools(fixture)
+    if mode == "cpsat":
+        return solve_with_ortools(fixture)
+
+    from .engine import solve_with_engine  # noqa: PLC0415 - avoids an import cycle
+
+    return solve_with_engine(fixture)

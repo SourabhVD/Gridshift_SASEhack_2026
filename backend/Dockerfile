@@ -16,8 +16,13 @@
 #     -e GRIDSHIFT_BACKTEST_PATH=/data/backtests \
 #     -v "$PWD/data/processed/backtests:/data/backtests:ro" gridshift-backend
 #
-# Build context is backend/, not the repository root: this image has no reason
-# to see the ml package, the frontend or anyone's .env.
+# Build context is the REPOSITORY ROOT, because the image needs both backend/
+# and the optimizer/ package beside it:
+#
+#   docker build -f backend/Dockerfile -t gridshift-backend .
+#
+# It still copies only those two, so the ml package, the frontend and anyone's
+# .env stay out of the image.
 
 FROM python:3.12-slim
 
@@ -30,10 +35,17 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Requirements first, so a code edit does not reinstall OR-Tools every build.
-COPY requirements.txt ./
+COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app ./app
+COPY backend/app ./app
+
+# Component 3, the optimization engine. It is a top-level package beside
+# backend/, not a dependency of it, so it is copied in and put on the import
+# path. Without it the default optimizer is simply absent and every run fails
+# at the moment the agent asks for a schedule.
+COPY optimizer /engine/optimizer
+ENV PYTHONPATH=/engine
 
 # Run as a non-root user. Nothing here writes to disk, so it needs no ownership
 # beyond reading its own code.
