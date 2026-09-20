@@ -40,6 +40,7 @@
 
 import type { Action, Building } from '@/types/api';
 import {
+  actionWindow,
   HOURS,
   NOW_HOUR,
   TZ_OFFSET,
@@ -235,6 +236,10 @@ const OPTIMIZED_BATTERY_KW = zeros().map((kw, h) => round1(kw + (BATTERY_DISPATC
  * permission the household may take rather than a load the plan leans on.
  */
 const HVAC_DELTA_KW: Record<number, number> = {};
+/** Empty under the solver, so this collapses to a zero-length window and
+  * makeFixture drops the row. The heuristic does move the setpoint, and then
+  * the window is real and the row appears with the text below. */
+const [HVAC_START_HOUR, HVAC_END_HOUR] = actionWindow(HVAC_DELTA_KW);
 const OPTIMIZED_HVAC_KW = HVAC_KW.map((kw, h) => round1(kw + (HVAC_DELTA_KW[h] ?? 0)));
 
 const OPTIMIZED_PARTS: FlowComponents = {
@@ -408,8 +413,8 @@ function buildActions(runId: string): Action[] {
       type: 'hvac_setpoint',
       title: `Allow the house to float to ${COMFORT_BAND_F[1]}°F from 17:00 to 19:00`,
       description: `Let the house drift from 72°F to ${COMFORT_BAND_F[1]}°F across the two evening hours, capped at the permitted two hours and inside the ${COMFORT_BAND_F[0]}-${COMFORT_BAND_F[1]}°F occupied band. The optimizer priced this one and did not build the schedule around it: with the pack already under 18:00 the heat pump cannot move the interval that sets the peak, so it is worth ${HVAC_PEAK_CUT_KW} kW there and the plan's flows show the heat pump on its normal schedule all evening. It is carried because it costs the household nothing to accept and is worth about $0.10 of energy if they do, and because it is the only action anyone in the house would feel, which is why the plan is routed for approval rather than dispatched.`,
-      start_time: isoHour(17),
-      end_time: isoHour(19),
+      start_time: isoHour(HVAC_START_HOUR),
+      end_time: isoHour(HVAC_END_HOUR),
       magnitude: 4,
       unit: '°F',
       estimated_peak_reduction_kw: HVAC_PEAK_CUT_KW,

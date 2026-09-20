@@ -14,6 +14,13 @@ action at all: an unconditioned high bay with dock-door infiltration has no
 thermal mass to pre-cool and no occupant comfort band to borrow against, so the
 tool reports zero flexible kW and the optimizer produces two actions rather
 than inventing a third.
+
+The two actions are the only rows a human approves, so every clock time and
+every figure in them is read off the OptimizationResult rather than typed. The
+two optimizers do not agree on shape -- the heuristic discharges a flat rate
+across one block, while the solver splits the battery across two separated
+hours and spreads the van charging over six evening ones -- and a literal that
+matched one of them would contradict the other's curve.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from .generator import (
     HOURS,
     NOW_HOUR,
+    OFF_PEAK_USD_PER_KWH,
     FlowComponents,
     HvacShareSpec,
     base_from_grid,
@@ -33,6 +41,9 @@ from .generator import (
     iso_hour,
     js_round,
     metered_actuals,
+    next_day_iso,
+    round1,
+    round2,
     solar_bell,
     zeros,
 )
@@ -109,10 +120,10 @@ BASELINE_PARTS = FlowComponents(
 
 #: Half of every arrival cohort keeps its afternoon slot; the other half is
 #: re-queued five hours later. Van-hours are preserved exactly (44 either side).
+#: This is the site-pinned shape, which the heuristic honours and the solver is
+#: free to improve on, so nothing in the prose below reads these directly.
 STAYING_VANS = [math.ceil(n / 2) for n in BASELINE_VANS]
 MOVED_VANS = [n // 2 for n in BASELINE_VANS]
-STAYING_VAN_COUNT = max(STAYING_VANS)
-MOVED_VAN_COUNT = max(MOVED_VANS)
 
 _EV_DELTA: dict[int, float] = {}
 for _h, _n in enumerate(BASELINE_VANS):
@@ -184,56 +195,297 @@ TOOL_FACTS: dict[str, dict[str, Any]] = {
 
 
 # --------------------------------------------------------------------------- #
+# Reading the dispatch back                                                    #
+# --------------------------------------------------------------------------- #
+#
+# The heuristic shaves a flat rate across one contiguous block. The CP-SAT
+# solver varies the rate hour to hour, and on this site it splits the battery
+# across two separated hours and spreads the van charging over six evening
+# ones. So a row cannot state a window, a rate or a dollar figure that was
+# typed: it has to describe whatever the dispatch turned out to be. These
+# helpers do that describing once, for both optimizers.
+
+
+def _clock(hour: int) -> str:
+    """Wall-clock label for an hour. 24 reads as midnight, not 24:00."""
+    return "%02d:00" % (hour % HOURS)
+
+
+def _runs(hours: list[int]) -> list[list[int]]:
+    """Ascending hours grouped into runs of consecutive hours."""
+    active = sorted(hours)
+    if not active:
+        return []
+    grouped: list[list[int]] = [[active[0]]]
+    for hour in active[1:]:
+        if hour == grouped[-1][-1] + 1:
+            grouped[-1].append(hour)
+        else:
+            grouped.append([hour])
+    return grouped
+
+
+def _span(hours: list[int]) -> str:
+    """
+    The clock phrase for the hours a lever is actually active.
+
+    One run of consecutive hours reads as a block, "14:00-17:00", with the end
+    exclusive. A split dispatch reads as the hours themselves, "14:00 and
+    22:00", because calling that a block would describe a shed that never
+    happened in the gap.
+    """
+    grouped = _runs(hours)
+    if not grouped:
+        return ""
+    parts = [
+        f"{_clock(run[0])}-{_clock(run[-1] + 1)}" if len(run) > 1 else _clock(run[0])
+        for run in grouped
+    ]
+    if len(parts) == 1:
+        return parts[0]
+    return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+
+def _edge(hour: int) -> str:
+    """A window edge as a timestamp. Ends are exclusive, so hour 24 is midnight."""
+    return next_day_iso(0) if hour >= HOURS else iso_hour(hour)
+
+
+def _hours_at_peak(r: "OptimizationResult") -> int:
+    """How many hours of the optimized curve sit at its own maximum."""
+    return sum(1 for kw in r.optimized_grid if abs(kw - r.optimized_peak_kw) <= 0.05)
+
+
+def _house_peak_kw(r: "OptimizationResult") -> float:
+    """The site's worst hour with the vans taken back out of it."""
+    return max(r.baseline_grid[h] - r.baseline_parts.ev[h] for h in range(HOURS))
+
+
+def _deepest_ev_cut_kw(r: "OptimizationResult") -> float:
+    """The most any single hour gives up out of the charging block."""
+    return round1(max((-kw for kw in r.ev_delta_kw.values() if kw < 0), default=0.0))
+
+
+def _battery_rate_phrase(r: "OptimizationResult") -> str:
+    """One flat rate, or the deepest of several."""
+    if len(set(r.battery_discharge_kw.values())) == 1:
+        return f"a flat {r.battery_flat_kw:.0f} kW"
+    return f"{r.battery_flat_kw:.0f} kW at the deepest hour"
+
+
+def _battery_sentence(r: "OptimizationResult") -> str:
+    """What the pack does, whatever shape the dispatch came out in."""
+    if not r.battery_hours:
+        return (
+            "The battery is left alone: this schedule found nothing worth doing with "
+            "it, so there is no discharge to approve."
+        )
+    head = (
+        f"The battery runs at {_span(r.battery_hours)} at {_battery_rate_phrase(r)}, "
+        f"{r.battery_kwh:.0f} kWh in all."
+    )
+    if r.battery_cut_at_peak_kw > 0:
+        return (
+            f"{head} That takes {r.battery_cut_at_peak_kw:.0f} kW straight off the "
+            f"{r.baseline_peak_hour}:00 peak."
+        )
+    return (
+        f"{head} None of it lands on the {r.baseline_peak_hour}:00 peak hour, so it "
+        "takes nothing off the baseline peak; what it does is hold down the hours that "
+        "would otherwise stand above the rest of the day once the vans have moved."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Plan                                                                         #
 # --------------------------------------------------------------------------- #
 
 
 def plan_summary(r: "OptimizationResult") -> str:
+    peak_ev_kw = r.baseline_parts.ev[r.baseline_peak_hour]
+    level_hours = _hours_at_peak(r)
+    level = (
+        f", and the curve sits level at that figure for {level_hours} hours, so there"
+        " is nothing left to flatten"
+        if level_hours > 1
+        else ""
+    )
     return " ".join(
         [
             f"Today's forecast peaks at {r.baseline_peak_kw:.0f} kW at",
             f"{r.baseline_peak_hour}:00, {r.baseline_peak_kw - r.threshold_kw:.0f} kW above",
             f"the {r.threshold_kw:.0f} kW threshold, and the cause is unambiguous: the",
-            "building itself never draws more than about 180 kW, and the other",
-            f"{24 * VAN_CHARGER_KW} kW is 24 delivery vans charging at once between 13:00",
-            "and 17:00. So the plan does not shed anything, it re-queues.",
-            f"{STAYING_VAN_COUNT} vans keep their afternoon slot, {MOVED_VAN_COUNT} move to",
-            "18:00-22:00, and because the vans are not back on route until 05:00 nobody",
-            f"waits on a charge. The battery then takes {r.battery_flat_kw:.0f} kW out of",
-            "14:00-17:00, which is worth more as arbitrage than as peak shaving -- it",
-            f"moves {r.battery_kwh:.0f} kWh from the $0.16 on-peak window to the $0.09",
-            f"overnight rate. Peak falls from {r.baseline_peak_kw:.0f} kW to",
-            f"{r.optimized_peak_kw:.0f} kW, a {r.peak_reduction_kw:.0f} kW cut worth about",
+            f"building itself never draws more than about {_house_peak_kw(r):.0f} kW, and",
+            f"the other {peak_ev_kw:.0f} kW is 24 delivery vans charging at once between",
+            "13:00 and 17:00. So the plan does not shed anything, it re-queues.",
+            f"{r.ev_shifted_kwh:.0f} kWh of van charging comes out of",
+            f"{_span(r.ev_shift_from_hours)} and the same energy goes back in at",
+            f"{_span(r.ev_shift_to_hours)}, and because the vans are not back on route",
+            "until 05:00 nobody waits on a charge.",
+            _battery_sentence(r),
+            f"Peak falls from {r.baseline_peak_kw:.0f} kW to {r.optimized_peak_kw:.0f} kW,",
+            f"a {r.peak_reduction_kw:.0f} kW cut worth about",
             f"${r.demand_charge_avoided_usd:.2f} on the demand charge, plus",
             f"${r.savings_usd:.2f} of day-ahead energy. There is deliberately no HVAC",
             "action: an unconditioned high bay with dock doors cycling has no thermal",
             "mass to pre-cool and no comfort band to borrow against, so offering one",
-            "would be theatre. The new binding interval is the 19:00-21:00 evening block,",
-            "and it sits comfortably under threshold.",
+            f"would be theatre. The new binding interval is {r.optimized_peak_hour}:00 at",
+            f"{r.optimized_peak_kw:.0f} kW,",
+            f"{r.threshold_kw - r.optimized_peak_kw:.0f} kW under threshold{level}.",
         ]
     )
 
 
 def build_actions(r: "OptimizationResult") -> list[dict[str, Any]]:
-    moved_kw = MOVED_VAN_COUNT * VAN_CHARGER_KW
+    charger_limit_kw = BUILDING["ev_bays"] * VAN_CHARGER_KW
+    capacity_kwh = BUILDING["battery_capacity_kwh"]
+
+    # -- the fleet ---------------------------------------------------------- #
+    ev_start, ev_end = r.ev_window
+    from_span = _span(r.ev_shift_from_hours)
+    to_span = _span(r.ev_shift_to_hours)
+    deepest_cut_kw = _deepest_ev_cut_kw(r)
+    busiest_ev_kw = round1(max(r.optimized_parts.ev)) if r.optimized_parts.ev else 0.0
+
+    if r.ev_delta_kw:
+        ev_title = f"Re-queue {r.ev_shifted_kwh:.0f} kWh of van charging into {to_span}"
+        ev_lines = [
+            "The vans are the peak, so the schedule re-queues them rather than "
+            f"shedding anything. {r.ev_shifted_kwh:.0f} kWh comes out of {from_span} "
+            f"and the same {r.ev_shifted_kwh:.0f} kWh goes back in at {to_span}, at "
+            f"{VAN_CHARGER_KW} kW a bay.",
+            f"The hour that gives up the most sheds {deepest_cut_kw:.0f} kW, and the "
+            f"busiest charging hour left anywhere in the day is {busiest_ev_kw:.0f} kW "
+            f"against the {charger_limit_kw} kW site limit.",
+            "The day's van energy is identical either way, so every vehicle reaches "
+            "the same state of charge, and the fleet does not leave the yard until "
+            "05:00, which is six hours of slack.",
+        ]
+        if r.ev_cut_at_peak_kw > 0:
+            ev_lines.append(
+                f"At the {r.baseline_peak_hour}:00 peak interval this takes "
+                f"{r.ev_cut_at_peak_kw:.0f} kW off the site."
+            )
+        else:
+            ev_lines.append(
+                f"None of the charging it moves sat on the {r.baseline_peak_hour}:00 "
+                "peak interval, so it takes nothing off the baseline peak."
+            )
+    else:
+        ev_title = "No van charging moved"
+        ev_lines = [
+            "This schedule leaves the charging block exactly where it is. No session "
+            "is re-queued and no charge is held back, so there is nothing here to "
+            "approve and no saving to claim."
+        ]
+
+    # -- the pack ----------------------------------------------------------- #
+    batt_start, batt_end = r.battery_window
+    batt_span = _span(r.battery_hours)
+    recharge_in_day = {h: round1(-kw) for h, kw in r.battery_delta_kw.items() if kw < 0}
+    soc_floor_pct = (
+        round1(min(r.optimized_parts.soc)) if r.optimized_parts.soc else r.end_soc_pct
+    )
+
+    if r.battery_hours:
+        batt_title = f"Discharge battery {r.battery_kwh:.0f} kWh at {batt_span}"
+        batt_lines = [
+            f"Dispatch {r.battery_kwh:.0f} kWh from the {capacity_kwh} kWh pack at "
+            f"{batt_span}, {_battery_rate_phrase(r)} against a "
+            f"{r.inverter_kw:.0f} kW inverter."
+        ]
+        if len(_runs(r.battery_hours)) > 1:
+            batt_lines.append(
+                "Those hours are separated rather than one block, and the pack sits "
+                "idle in between."
+            )
+        if recharge_in_day:
+            batt_lines.append(
+                f"Charging of {sum(recharge_in_day.values()):.0f} kWh at "
+                f"{_span(sorted(recharge_in_day))} keeps the pack whole inside the "
+                "same day, billed at the price of those hours."
+            )
+        elif r.battery_recharge_kwh > 0:
+            batt_lines.append(
+                f"The pack is refilled with {r.battery_recharge_kwh:.0f} kWh overnight "
+                f"at the ${OFF_PEAK_USD_PER_KWH:.2f} rate, after this window."
+            )
+        if abs(r.end_soc_pct - r.start_soc_pct) < 0.05:
+            batt_lines.append(
+                "State of charge ends the run where it started, at "
+                f"{r.start_soc_pct:.0f}%, and never drops below {soc_floor_pct:.0f}% "
+                f"against a {r.reserve_floor_pct:.0f}% floor."
+            )
+        else:
+            batt_lines.append(
+                f"State of charge goes from {r.start_soc_pct:.0f}% to "
+                f"{r.end_soc_pct:.0f}%, never below {soc_floor_pct:.0f}% against a "
+                f"{r.reserve_floor_pct:.0f}% floor."
+            )
+        if r.battery_cut_at_peak_kw > 0:
+            batt_lines.append(
+                f"At the {r.baseline_peak_hour}:00 peak interval it takes "
+                f"{r.battery_cut_at_peak_kw:.0f} kW off the site."
+            )
+        else:
+            batt_lines.append(
+                f"It does not run at the {r.baseline_peak_hour}:00 peak interval, so "
+                "its contribution to the baseline peak reduction is zero; the hours it "
+                "does run are the ones that would otherwise stand above the rest of "
+                "the day after the van shift."
+            )
+        # The overnight refill is billed against the plan, not against this
+        # lever, so a row whose recharge falls outside the window has to say
+        # what it left out or its dollar figure will not reconcile with the
+        # headline the reader is holding it against.
+        refill_cost_usd = round2(r.battery_recharge_kwh * OFF_PEAK_USD_PER_KWH)
+        if r.battery_savings_usd > 0.005:
+            batt_lines.append(
+                "At the tariff the discharged energy is worth "
+                f"${r.battery_savings_usd:.2f}."
+            )
+            if refill_cost_usd > 0.005:
+                batt_lines.append(
+                    f"The overnight refill costs ${refill_cost_usd:.2f} and is billed "
+                    "against the plan rather than against this row, so the battery is "
+                    f"worth ${round2(r.battery_savings_usd - refill_cost_usd):.2f} net "
+                    "today."
+                )
+        elif r.battery_savings_usd < -0.005:
+            batt_lines.append(
+                "At the tariff the round trip costs "
+                f"${-r.battery_savings_usd:.2f} of energy, which the peak work pays for."
+            )
+        else:
+            batt_lines.append(
+                "At the tariff it is worth $0.00: the energy the pack buys back costs "
+                "exactly what the discharge saves. This is load shaping, not "
+                "arbitrage, and it should not be approved expecting a spread."
+            )
+        batt_lines.append(
+            "It also leaves headroom if a route runs late and the afternoon cohort "
+            "arrives bunched."
+        )
+    else:
+        batt_title = "No battery discharge today"
+        batt_lines = [
+            "This schedule leaves the pack at its baseline. Nothing is discharged and "
+            "nothing is bought back, so there is no shed here to approve and no "
+            "energy value either way. State of charge holds at "
+            f"{r.start_soc_pct:.0f}% against a {r.reserve_floor_pct:.0f}% floor."
+        ]
+
     return [
         {
             "type": "ev_charging_shift",
-            "title": f"Stagger {MOVED_VAN_COUNT} of 24 vans into 18:00-22:00",
-            "description": (
-                f"Split each arrival cohort in half: {STAYING_VAN_COUNT} vans keep their "
-                f"13:00-17:00 slot and {MOVED_VAN_COUNT} are re-queued into 18:00-22:00 "
-                f"at {VAN_CHARGER_KW} kW each. Van-hours are identical either way, so "
-                "every vehicle reaches the same state of charge -- the fleet does not "
-                "leave the yard until 05:00, which is six hours of slack. This single "
-                f"action takes {moved_kw} kW out of the peak-setting interval."
-            ),
-            "start_time": iso_hour(18),
-            "end_time": iso_hour(22),
-            "magnitude": moved_kw,
+            "title": ev_title,
+            "description": " ".join(ev_lines),
+            "start_time": _edge(ev_start),
+            "end_time": _edge(ev_end),
+            "magnitude": deepest_cut_kw,
             "unit": "kW",
-            "estimated_peak_reduction_kw": moved_kw,
-            "estimated_savings_usd": 14.6,
+            "estimated_peak_reduction_kw": r.ev_cut_at_peak_kw,
+            "estimated_savings_usd": r.ev_savings_usd,
             "constraints_checked": [
                 "all_vans_full_by_0500_departure",
                 "site_charger_limit_264kw",
@@ -243,22 +495,14 @@ def build_actions(r: "OptimizationResult") -> list[dict[str, Any]]:
         },
         {
             "type": "battery_discharge",
-            "title": f"Discharge battery at {r.battery_flat_kw:.0f} kW, 14:00-17:00",
-            "description": (
-                f"Dispatch {r.battery_kwh:.0f} kWh from the 1000 kWh pack across the three "
-                f"on-peak afternoon hours, taking SOC from {r.start_soc_pct:.0f}% to "
-                f"{r.end_soc_pct:.0f}% -- nowhere near the {r.reserve_floor_pct:.0f}% "
-                f"floor, and a fraction of the {r.inverter_kw:.0f} kW inverter. This is "
-                f"mostly an arbitrage action: {r.battery_kwh:.0f} kWh bought back "
-                "overnight at $0.09 instead of drawn at $0.16. It also leaves headroom if "
-                "a route runs late and the afternoon cohort arrives bunched."
-            ),
-            "start_time": iso_hour(14),
-            "end_time": iso_hour(17),
+            "title": batt_title,
+            "description": " ".join(batt_lines),
+            "start_time": _edge(batt_start),
+            "end_time": _edge(batt_end),
             "magnitude": r.battery_flat_kw,
             "unit": "kW",
-            "estimated_peak_reduction_kw": r.battery_flat_kw,
-            "estimated_savings_usd": 12.6,
+            "estimated_peak_reduction_kw": r.battery_cut_at_peak_kw,
+            "estimated_savings_usd": r.battery_savings_usd,
             "constraints_checked": [
                 "soc_reserve_floor_10pct",
                 "max_discharge_500kw",
@@ -275,7 +519,27 @@ def build_actions(r: "OptimizationResult") -> list[dict[str, Any]]:
 
 
 def build_script(r: "OptimizationResult") -> list[Step]:
-    fleet_share_pct = round((24 * VAN_CHARGER_KW / r.baseline_peak_kw) * 100)
+    charger_limit_kw = BUILDING["ev_bays"] * VAN_CHARGER_KW
+    fleet_kw = r.baseline_parts.ev[r.baseline_peak_hour]
+    fleet_share_pct = round((fleet_kw / r.baseline_peak_kw) * 100)
+    first_over = (
+        r.first_exceedance_hour
+        if r.first_exceedance_hour is not None
+        else r.baseline_peak_hour
+    )
+    busiest_ev_kw = round1(max(r.optimized_parts.ev)) if r.optimized_parts.ev else 0.0
+    level_hours = _hours_at_peak(r)
+    level_tail = (
+        f", and {level_hours} hours now sit at that same level -- there is nothing "
+        "left to flatten."
+        if level_hours > 1
+        else "."
+    )
+    battery_decision = (
+        f"and discharge the battery at {_span(r.battery_hours)}"
+        if r.battery_hours
+        else "and leave the battery at its baseline"
+    )
     return [
         Step(
             type="thinking",
@@ -302,10 +566,10 @@ def build_script(r: "OptimizationResult") -> list[Step]:
                 f"Peak confirmed: {r.baseline_peak_kw:.0f} kW at {r.baseline_peak_hour}:00, "
                 f"{r.baseline_peak_kw - r.threshold_kw:.0f} kW over the "
                 f"{r.threshold_kw:.0f} kW threshold, above it for "
-                f"{r.hours_over_threshold} hours from 13:00. Note the shape -- the site is "
-                f"at {r.baseline_grid[12]:.0f} kW at noon and {r.baseline_grid[13]:.0f} kW "
-                "an hour later. That is not a building warming up, that is something "
-                "plugging in."
+                f"{r.hours_over_threshold} hours from {first_over}:00. Note the shape -- "
+                f"the site is at {r.baseline_grid[12]:.0f} kW at noon and "
+                f"{r.baseline_grid[13]:.0f} kW an hour later. That is not a building "
+                "warming up, that is something plugging in."
             ),
         ),
         Step(
@@ -315,8 +579,8 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             message=(
                 "Tariff loaded. $0.09/kWh off-peak, $0.16/kWh from 14:00 to 20:00, "
                 "$8.50/kW monthly demand charge. Worth noting that 18:00-20:00 is still "
-                "on-peak, so anything I move into the early evening saves demand charge "
-                "but not energy."
+                "on-peak, so charge moved only that far saves demand charge but not "
+                "energy. Anything that reaches 20:00 or later saves both."
             ),
         ),
         Step(
@@ -338,8 +602,8 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             message=(
                 f"There it is. Twenty-four delivery vans at {VAN_CHARGER_KW} kW, all "
                 "plugging in as they come off route between 13:00 and 17:00 -- "
-                f"{24 * VAN_CHARGER_KW} kW at full concurrency, which is "
-                f"{fleet_share_pct}% of the peak. They do not depart until 05:00, so every "
+                f"{fleet_kw:.0f} kW of them at the peak hour, which is "
+                f"{fleet_share_pct}% of it. They do not depart until 05:00, so every "
                 "one of them has six hours of slack."
             ),
         ),
@@ -359,10 +623,10 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             type="thinking",
             message=(
                 "So this is a queueing problem, not a shedding problem. If the vans "
-                "create the peak and every van has six hours of slack, splitting the "
-                "fleet across two windows is worth more than anything the battery can do "
-                "-- and it costs nobody anything. I will let the optimizer place the "
-                "split and use the battery for on-peak arbitrage on top."
+                "create the peak and every van has six hours of slack, moving charge "
+                "into the evening is worth more than anything the battery can do -- and "
+                "it costs nobody anything. I will let the optimizer decide where that "
+                "charge lands, and what if anything the battery should do on top."
             ),
             duration_ms=1050,
         ),
@@ -390,10 +654,10 @@ def build_script(r: "OptimizationResult") -> list[Step]:
                 f"Solver returned an optimal schedule in {r.solve_time_ms / 1000:.1f} s. "
                 f"Peak drops from {r.baseline_peak_kw:.0f} kW to "
                 f"{r.optimized_peak_kw:.0f} kW, a {r.peak_reduction_kw:.0f} kW cut, by "
-                f"splitting the fleet {STAYING_VAN_COUNT}/{MOVED_VAN_COUNT} across "
-                f"afternoon and evening. The binding interval moves to "
-                f"{r.optimized_peak_hour}:00 -- the evening cohort now sets the peak, "
-                "which is why splitting further would not help."
+                f"moving {r.ev_shifted_kwh:.0f} kWh of van charging out of "
+                f"{_span(r.ev_shift_from_hours)} into {_span(r.ev_shift_to_hours)}. The "
+                f"binding interval moves to {r.optimized_peak_hour}:00 at "
+                f"{r.optimized_peak_kw:.0f} kW{level_tail}"
             ),
             duration_ms=r.solve_time_ms,
         ),
@@ -404,9 +668,10 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             message=(
                 "All 9 constraints pass. Every van reaches full charge before the 05:00 "
                 f"departure with hours to spare, no bay exceeds {VAN_CHARGER_KW} kW, and "
-                "the site stays under the 264 kW charger limit in both windows. Battery "
-                f"ends at {r.end_soc_pct:.0f}%, well clear of the "
-                f"{r.reserve_floor_pct:.0f}% floor."
+                f"the busiest charging hour in the schedule is {busiest_ev_kw:.0f} kW "
+                f"against the {charger_limit_kw} kW site limit. Battery ends at "
+                f"{r.end_soc_pct:.0f}%, well clear of the {r.reserve_floor_pct:.0f}% "
+                "floor."
             ),
         ),
         Step(
@@ -414,10 +679,9 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             tool="save_action_plan",
             invoke="save_action_plan",
             message=(
-                f"Committing a two-action plan: re-queue {MOVED_VAN_COUNT} of the 24 vans "
-                f"into 18:00-22:00, and discharge the battery at {r.battery_flat_kw:.0f} "
-                "kW from 14:00 to 17:00. No HVAC action -- there is no flexibility there "
-                "to recommend."
+                f"Committing a two-action plan: re-queue {r.ev_shifted_kwh:.0f} kWh of "
+                f"van charging into {_span(r.ev_shift_to_hours)}, {battery_decision}. "
+                "No HVAC action -- there is no flexibility there to recommend."
             ),
         ),
         Step(

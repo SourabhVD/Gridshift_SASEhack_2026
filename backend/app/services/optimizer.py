@@ -57,8 +57,11 @@ from ..fixtures.generator import (
     OFF_PEAK_USD_PER_KWH,
     PRICE_PER_KWH,
     FlowComponents,
+    action_window,
     energy_cost,
     grid_from_components,
+    lever_cut_at,
+    lever_savings_usd,
     round1,
     round2,
     soc_walk,
@@ -154,6 +157,79 @@ class OptimizationResult:
     @property
     def hours_over_threshold(self) -> int:
         return len(self.over_threshold_hours)
+
+    # ------------------------------------------------- per-lever attribution
+    #
+    # Each site's action text used to state its own window and its own dollar
+    # figure, both authored against the heuristic's flat single-window shape.
+    # A solver varies the rate and may split the dispatch, so those strings
+    # started contradicting the curve beside them and the per-action savings
+    # stopped summing to the plan. Everything a row needs is derived here, once,
+    # so four fixtures cannot drift four different ways.
+
+    @property
+    def battery_delta_kw(self) -> dict[int, float]:
+        """
+        Signed change against the baseline battery, hour by hour.
+
+        Not `battery_discharge_kw`: that is discharge only, and pricing it
+        alone credits the energy without ever paying to put it back, which
+        overstated the office's battery action by more than twice.
+        """
+        baseline = self.baseline_parts.battery
+        return {
+            h: round1(kw - baseline[h])
+            for h, kw in enumerate(self.optimized_parts.battery)
+            if abs(kw - baseline[h]) > 1e-9
+        }
+
+    @property
+    def battery_window(self) -> tuple[int, int]:
+        return action_window(self.battery_discharge_kw)
+
+    @property
+    def ev_window(self) -> tuple[int, int]:
+        return action_window(self.ev_delta_kw)
+
+    @property
+    def hvac_window(self) -> tuple[int, int]:
+        return action_window(self.hvac_delta_kw)
+
+    @property
+    def battery_savings_usd(self) -> float:
+        """
+        Net of buying the energy back, wherever that purchase happens.
+
+        The solver recharges inside the day, so the cost is already in the
+        hourly deltas. The heuristic recharges after it, and `_assemble` bills
+        that separately -- money that belonged to no lever, so the three rows
+        summed to $46.52 against a $22.22 plan on the office. Subtracting it
+        here is what makes the rows add up on both paths.
+        """
+        return round2(
+            lever_savings_usd(self.battery_delta_kw, reduces_grid=True)
+            - self.battery_recharge_kwh * OFF_PEAK_USD_PER_KWH
+        )
+
+    @property
+    def ev_savings_usd(self) -> float:
+        return lever_savings_usd(self.ev_delta_kw)
+
+    @property
+    def hvac_savings_usd(self) -> float:
+        return lever_savings_usd(self.hvac_delta_kw)
+
+    @property
+    def battery_cut_at_peak_kw(self) -> float:
+        return lever_cut_at(self.battery_delta_kw, self.baseline_peak_hour, reduces_grid=True)
+
+    @property
+    def ev_cut_at_peak_kw(self) -> float:
+        return lever_cut_at(self.ev_delta_kw, self.baseline_peak_hour)
+
+    @property
+    def hvac_cut_at_peak_kw(self) -> float:
+        return lever_cut_at(self.hvac_delta_kw, self.baseline_peak_hour)
 
     @property
     def ev_shift_from_hours(self) -> list[int]:
@@ -548,6 +624,19 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
     ev_cap_d = max(max(ev_base_d, default=0), _deci(charger_kw * bays))
     earliest = int(ev_facts.get("earliest_shift_hour", 0) or 0)
 
+    # The last hour by which every session must be served. The tools report
+    # these as ISO timestamps; the latest one bounds the whole fleet.
+    deadline = HOURS
+    declared = ev_facts.get("deadlines")
+    if isinstance(declared, dict) and declared:
+        hours = []
+        for value in declared.values():
+            text = str(value)
+            if "T" in text and text[11:13].isdigit():
+                hours.append(int(text[11:13]))
+        if hours:
+            deadline = max(hours)
+
     ev = [model.NewIntVar(0, ev_cap_d, f"ev_{h}") for h in range(HOURS)]
     # Energy is conserved exactly: charging moves in time, it does not vanish.
     model.Add(sum(ev) == sum(ev_base_d))
@@ -556,6 +645,14 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
         # unless the baseline was already charging then -- moving a car's
         # charge earlier than it arrived is not a schedule, it is fiction.
         if h < earliest and ev_base_d[h] == 0:
+            model.Add(ev[h] == 0)
+        # Nor after the fleet has left. Only earliest_shift_hour used to be
+        # enforced, so the solver happily re-queued the office's vans to 23:00
+        # against a 22:00 departure, and nothing downstream caught it:
+        # validate_schedule checks the state of charge, the inverter, EV
+        # energy, drift duration and the direction of the peak, but never a
+        # deadline. A plan that strands a van is not a cheaper plan.
+        if h >= deadline and ev_base_d[h] == 0:
             model.Add(ev[h] == 0)
 
     # --- HVAC: pre-cool then drift, inside the comfort band -----------------

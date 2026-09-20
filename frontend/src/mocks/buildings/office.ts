@@ -26,6 +26,7 @@
 
 import type { Action, Building } from '@/types/api';
 import {
+  actionWindow,
   DEMAND_CHARGE_USD_PER_KW,
   NOW_HOUR,
   PRICE_PER_KWH,
@@ -140,16 +141,17 @@ const BASELINE_PARTS: FlowComponents = {
  */
 const BATTERY_KW_BY_HOUR: Record<number, number> = {
   7: -90,
-  13: +16.7,
-  14: +54.7,
-  15: +80.7,
-  16: +138.7,
-  17: +63.7,
-  18: +19.7,
-  20: -17.3,
-  21: -60.3,
-  22: -93.3,
-  23: -113.3,
+  10: +12.4,
+  11: +20.4,
+  12: +34.4,
+  13: +5.4,
+  14: +43.4,
+  15: +91.5,
+  16: +127.4,
+  17: +52.4,
+  18: +10.2,
+  22: -173.6,
+  23: -133.9,
 };
 const OPTIMIZED_BATTERY = zeros().map((kw, h) => kw + (BATTERY_KW_BY_HOUR[h] ?? 0));
 
@@ -158,22 +160,20 @@ const OPTIMIZED_BATTERY = zeros().map((kw, h) => kw + (BATTERY_KW_BY_HOUR[h] ?? 
  * and restarts at 19:00 once the site has room for it again.
  */
 const EV_DELTA_KW: Record<number, number> = {
-  10: -23.7,
-  11: -31.7,
-  12: -45.7,
   13: -69,
   14: -69,
-  15: -69,
-  19: +33.1,
+  15: -46.9,
+  18: +1.8,
+  19: +45.1,
   20: +69,
   21: +69,
-  22: +69,
-  23: +68,
 };
 const OPTIMIZED_EV = BASELINE_EV.map((kw, h) => round1(kw + (EV_DELTA_KW[h] ?? 0)));
 
 /** Empty on purpose: the solver left every setpoint where it found it. */
 const HVAC_DELTA_KW: Record<number, number> = {};
+/** Empty, so this collapses to a zero-length window and the row is dropped. */
+const [HVAC_START_HOUR, HVAC_END_HOUR] = actionWindow(HVAC_DELTA_KW);
 const OPTIMIZED_HVAC = BASELINE_HVAC.map((kw, h) => kw + (HVAC_DELTA_KW[h] ?? 0));
 
 const OPTIMIZED_SOC = socWalk(
@@ -353,8 +353,8 @@ function buildActions(runId: string): Action[] {
       type: 'hvac_setpoint',
       title: 'Hold the HVAC setpoint at 72°F, no drift today',
       description: `The optimizer had the usual two-hour float to 75°F available and did not use it. With the battery and the EV shift already holding the day at or under ${OPTIMIZED_PEAK_KW} kW, spending occupant comfort buys nothing, so nothing is sent to the air handlers and the occupied band is never approached. The entry stays in the plan so the lever is on the record and can be called for if the afternoon runs hotter than the forecast.`,
-      start_time: isoHour(14),
-      end_time: isoHour(16),
+      start_time: isoHour(HVAC_START_HOUR),
+      end_time: isoHour(HVAC_END_HOUR),
       magnitude: 0,
       unit: '°F',
       estimated_peak_reduction_kw: HVAC_PEAK_CUT_KW,

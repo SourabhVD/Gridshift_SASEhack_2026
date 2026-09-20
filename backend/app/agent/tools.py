@@ -215,8 +215,17 @@ def build_plan(ctx: ToolContext) -> dict[str, Any]:
     r = ctx.require_result("save_action_plan")
     fixture = ctx.fixture
 
+    # A lever the optimizer left alone gets no row. Its window collapses to
+    # zero length, which the contract forbids -- end_time must be after
+    # start_time -- and which the dashboard would render as an action a human
+    # is asked to approve when nothing actually happens. Dropping it is also
+    # the rule the agent itself works to: a two-action plan that is true beats
+    # a three-action plan that is not. Sites where every lever moves are
+    # unaffected.
+    drafts = [d for d in fixture.build_actions(r) if d["end_time"] > d["start_time"]]
+
     actions: list[dict[str, Any]] = []
-    for index, draft in enumerate(fixture.build_actions(r), start=1):
+    for index, draft in enumerate(drafts, start=1):
         action = dict(draft)
         action["id"] = f"{ctx.run_id}-act-{index:02d}"
         action["run_id"] = ctx.run_id

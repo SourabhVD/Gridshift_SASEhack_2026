@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 HOURS = 24
 
@@ -175,6 +175,62 @@ DEMAND_CHARGE_USD_PER_KW = 8.5
 
 def energy_cost(load_kw: Sequence[float]) -> float:
     return sum(kw * PRICE_PER_KWH[h] for h, kw in enumerate(load_kw))
+
+
+# --------------------------------------------------------------------------- #
+# Deriving an action from a dispatch                                           #
+# --------------------------------------------------------------------------- #
+#
+# The four sites' action text was authored against the heuristic, which shaves
+# a flat rate across one contiguous window. A solver does not: it varies the
+# rate hour to hour and may split the dispatch. That left every site stating a
+# window its own curve contradicted -- an action reading "14:00-17:00" beside a
+# battery that actually ran 13:00 to 18:00 -- and per-action savings that no
+# longer summed to the plan's. Both are read by the person approving the plan,
+# so both are derived here rather than typed.
+
+
+def action_window(hours: Iterable[int] | Mapping[int, float]) -> tuple[int, int]:
+    """
+    Inclusive start and exclusive end hour spanned by a lever's activity.
+
+    A split dispatch is reported as the span covering it, because an action is
+    one row with one window in the contract. A gap belongs in the description,
+    not in a second row the frontend has nowhere to put.
+    """
+    active = sorted(int(h) for h in hours)
+    if not active:
+        return 0, 0
+    return active[0], min(active[-1] + 1, HOURS)
+
+
+def lever_savings_usd(delta_kw: Mapping[int, float], *, reduces_grid: bool = False) -> float:
+    """
+    What one lever's own change to the grid curve is worth at the tariff.
+
+    `delta_kw` is the lever's hourly change in its own terms. Consumers (EV,
+    HVAC) raise the grid as they rise, so a positive delta costs money. A
+    battery discharge is the other way round, so pass `reduces_grid=True` to
+    price a positive value as a saving. Across the levers these sum to the
+    plan's energy saving, which is the first thing a reader checks.
+    """
+    sign = 1.0 if reduces_grid else -1.0
+    return round2(
+        sum(sign * kw * PRICE_PER_KWH[h] for h, kw in delta_kw.items() if 0 <= int(h) < HOURS)
+    )
+
+
+def lever_cut_at(delta_kw: Mapping[int, float], hour: int, *, reduces_grid: bool = False) -> float:
+    """
+    How much this lever takes off the grid at one hour, never below zero.
+
+    The contract defines `estimated_peak_reduction_kw` as a lever's
+    contribution at the BASELINE peak interval, so a lever doing nothing then
+    contributes nothing. That is the honest answer for a battery that starts
+    after the peak, and it stops an action claiming a reduction it never made.
+    """
+    value = float(delta_kw.get(hour, 0.0))
+    return round1(max(0.0, value if reduces_grid else -value))
 
 
 # --------------------------------------------------------------------------- #
