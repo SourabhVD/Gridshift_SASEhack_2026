@@ -17,7 +17,7 @@ how each piece works; this file is the hour-one path.
 
 ```powershell
 # Windows PowerShell
-cd backend\reference
+cd backend
 python -m venv .venv;  .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
@@ -99,9 +99,10 @@ bare name), calls `load_model()`, `load_standard_frame()` and
 `forecast_next_24_hours(bundle, history, future_weather)`, and maps the 24
 `predicted_load_kw` values onto the curve. Train first (`cd ml && python
 run_pipeline.py`) and install the ml dependencies into this venv
-(`pip install -r ../../ml/requirements.txt`) — pandas and scikit-learn are
-deliberately not in this backend's requirements. Any failure logs one warning
-and falls back to fixture curves. Two caveats:
+(`pip install -r ../ml/requirements.txt`), which pins the versions the model
+was trained against. The API imports none of them outside the `ml` branch of
+`forecast.py`. Any failure logs one warning and falls back to fixture curves.
+Two caveats:
 
 * The prototype model is trained on one synthetic commercial building, so the
   reference scales its shape onto each site's own baseline peak. Delete that

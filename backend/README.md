@@ -13,7 +13,8 @@ layer is still fixtures and the optimizer is still a heuristic — see
 backend/
 ├── README.md
 ├── HANDOFF.md                  the production path, step by step
-├── requirements.txt            fastapi, uvicorn, pydantic, dotenv, google-genai, pytest, httpx
+├── requirements.txt            what CI installs; the API itself needs only
+│                               fastapi, uvicorn, pydantic, dotenv, google-genai, pytest, httpx
 ├── .env.example                copy to backend/.env; every value has a working default
 ├── app/
 │   ├── main.py                 FastAPI app, CORS from env, /health, router
@@ -227,9 +228,10 @@ predicted = forecast_next_24_hours(bundle, history, future_weather)
 and maps `predicted["predicted_load_kw"]` into the 24 `predicted_load_kw`
 values. To try it, train a model first (`cd ml && python run_pipeline.py`,
 which writes `ml/artifacts/load_forecaster.joblib`) and install the ml
-dependencies into this venv (`pip install -r ../../ml/requirements.txt`) —
-pandas, scikit-learn and joblib are deliberately **not** in this backend's
-requirements, because the reference must install and run without them.
+dependencies into this venv (`pip install -r ../ml/requirements.txt`), which
+pins the versions the model was trained against. The API itself imports none of
+them: every ml import is inside the `ml` branch of `forecast.py` and failure
+falls back to fixtures, so the backend installs and runs without them.
 
 Anything missing — the package, the artifact, the history CSV, a wrong-length
 prediction — logs one warning and falls back to the fixture curves. A dashboard
