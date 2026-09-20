@@ -43,6 +43,7 @@ from .generator import (
     metered_actuals,
     next_day_iso,
     energy_phrase,
+    number_word,
     round1,
     solver_label,
     round2,
@@ -682,7 +683,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             tool="save_action_plan",
             invoke="save_action_plan",
             message=(
-                f"Committing a two-action plan: re-queue {r.ev_shifted_kwh:.0f} kWh of "
+                f"Committing a {number_word(r.action_rows)}-action plan: re-queue {r.ev_shifted_kwh:.0f} kWh of "
                 f"van charging into {_span(r.ev_shift_to_hours)}, {battery_decision}. "
                 "No HVAC action -- there is no flexibility there to recommend."
             ),
@@ -698,7 +699,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             ),
             payload={
                 "requires_approval": True,
-                "action_count": 2,
+                "action_count": r.action_rows,
                 "approvers": ["dispatch_supervisor"],
             },
         ),

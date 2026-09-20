@@ -185,6 +185,20 @@ class OptimizationResult:
         }
 
     @property
+    def action_rows(self) -> int:
+        """
+        How many rows the plan actually puts in front of a human.
+
+        A lever the optimizer left alone collapses to a zero-length window and
+        is dropped, so this is not always three -- under the engine it is two
+        on every site. The scripted agent announced "a three-action plan" and
+        then handed over two, which is the kind of detail that makes every
+        other number on the screen look approximate.
+        """
+        windows = (self.battery_window, self.ev_window, self.hvac_window)
+        return sum(1 for start, end in windows if end > start)
+
+    @property
     def battery_window(self) -> tuple[int, int]:
         return action_window(self.battery_discharge_kw)
 

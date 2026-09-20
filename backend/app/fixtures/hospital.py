@@ -40,6 +40,7 @@ from .generator import (
     next_day_iso,
     piecewise,
     energy_phrase,
+    number_word,
     round1,
     solver_label,
     solar_bell,
@@ -423,6 +424,21 @@ def plan_summary(r: "OptimizationResult") -> str:
     return " ".join(parts)
 
 
+def _comfort_clause(r: "OptimizationResult") -> str:
+    """
+    What this plan asks of the wards, if anything.
+
+    Both approval messages used to state flatly that "the HVAC action touches
+    occupied space". Under the engine no setpoint moves on this site at all,
+    so the agent was asking a clinical engineer to sign off on something the
+    plan does not contain -- and a clinician is exactly the reader who would
+    notice.
+    """
+    if r.hvac_delta_kw:
+        return "The HVAC action touches occupied space."
+    return "No setpoint moves at all, so nothing in this plan reaches a patient."
+
+
 def build_actions(r: "OptimizationResult") -> list[dict[str, Any]]:
     capacity_kwh = float(BUILDING["battery_capacity_kwh"])
     floor_margin = round1(r.end_soc_pct - r.reserve_floor_pct)
@@ -720,16 +736,16 @@ def build_script(r: "OptimizationResult") -> list[Step]:
         approval_message = (
             f"This one is not close to automatic. The battery finishes "
             f"{_num(floor_margin)} {_points(floor_margin)} off a critical-care reserve "
-            "floor and the HVAC action touches occupied space, so it goes to the "
-            "facilities director and the on-call clinical engineer together."
+            f"floor. {_comfort_clause(r)} It goes to the facilities director and the "
+            "on-call clinical engineer together."
         )
     else:
         approval_message = (
             f"This one is not close to automatic. The battery keeps {_num(floor_margin)} "
-            f"{_points(floor_margin)} of clearance on the critical-care floor, but the HVAC "
-            "action touches occupied space and the plan moves charging on vehicles someone "
-            "has to be able to dispatch, so it goes to the facilities director and the "
-            "on-call clinical engineer together."
+            f"{_points(floor_margin)} of clearance on the critical-care floor. "
+            f"{_comfort_clause(r)} What still needs two signatures is the charging: these "
+            "are vehicles someone has to be able to dispatch. It goes to the facilities "
+            "director and the on-call clinical engineer together."
         )
 
     return [
@@ -872,7 +888,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             tool="save_action_plan",
             invoke="save_action_plan",
             message=(
-                f"Committing a three-action plan: {battery_clause}, {hvac_clause}, and "
+                f"Committing a {number_word(r.action_rows)}-action plan: {battery_clause}, {hvac_clause}, and "
                 f"{ev_clause}."
             ),
         ),
@@ -883,7 +899,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             message=approval_message,
             payload={
                 "requires_approval": True,
-                "action_count": 3,
+                "action_count": r.action_rows,
                 "approvers": ["facilities_director", "clinical_engineering_on_call"],
             },
         ),

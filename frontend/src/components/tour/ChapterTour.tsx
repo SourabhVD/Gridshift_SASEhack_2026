@@ -43,16 +43,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useGridShift } from '@/lib/store';
-import { TOOL_NODES, type SceneNode } from '@/components/scene/layout';
 import {
   useHovered,
   useSelected,
   useSelectionStore,
 } from '@/components/scene/interaction/selection';
-import { ChapterPill } from './ChapterPill';
+import { type SceneNode } from '@/components/scene/layout';
+import { ChapterPill, type PillEmphasis } from './ChapterPill';
 import { PortfolioTour } from './PortfolioTour';
 import {
+  ACTION_CHAPTERS,
   CHAPTERS,
+  TOOL_CHAPTERS,
   chapterTitle,
   isDeviceChapter,
   type ChapterCtx,
@@ -254,10 +256,33 @@ export function ChapterTour() {
 
   /* ------------------------------------------------------------------ agent */
 
-  const activeNodes = useMemo<ReadonlySet<SceneNode>>(() => {
-    if (runStatus !== 'running' || !activeTool) return new Set<SceneNode>();
-    return new Set(TOOL_NODES[activeTool] ?? []);
+  /** The chapters the agent's current tool is about. */
+  const activeChapters = useMemo<ReadonlySet<ChapterId>>(() => {
+    if (runStatus !== 'running' || !activeTool) return new Set<ChapterId>();
+    return new Set(TOOL_CHAPTERS[activeTool] ?? []);
   }, [runStatus, activeTool]);
+
+  /**
+   * The chapters a pending plan is asking about: the levers it actually moved,
+   * plus the plan itself. A lever the optimizer left alone has no row -- the
+   * office's HVAC among them -- and must not light up, or the column would ask
+   * for approval of something nobody is proposing.
+   */
+  const pendingChapters = useMemo<ReadonlySet<ChapterId>>(() => {
+    if (runStatus !== 'awaiting_approval' || !plan) return new Set<ChapterId>();
+    const ids = plan.actions
+      .map((action) => ACTION_CHAPTERS[action.type])
+      .filter((id): id is ChapterId => Boolean(id));
+    return new Set<ChapterId>([...ids, 'plan']);
+  }, [runStatus, plan]);
+
+  const emphasisFor = useCallback(
+    (id: ChapterId): PillEmphasis => {
+      if (runStatus === 'running') return activeChapters.has(id) ? 'active' : 'ambient';
+      return pendingChapters.has(id) ? 'pending' : 'none';
+    },
+    [runStatus, activeChapters, pendingChapters],
+  );
 
   /* ----------------------------------------------------------------- render */
 
@@ -323,7 +348,7 @@ export function ChapterTour() {
             count={CHAPTERS.length}
             expanded={expanded === id}
             marked={isDeviceChapter(id) && (hovered === id || selected === id)}
-            pulsing={isDeviceChapter(id) && activeNodes.has(id)}
+            emphasis={emphasisFor(id)}
             ctx={ctx}
             onToggle={toggle}
             onStep={step}

@@ -132,6 +132,28 @@
   }
 }
 
+@keyframes gs-chapter-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
+}
+
+/**
+ * The chapter the agent is on. The ring itself is a static box-shadow, set
+ * inline in the channel's colour; only its opacity breathes, because three.js
+ * and the bloom pass own the frame budget and an animated shadow would repaint
+ * the pill every frame. Under prefers-reduced-motion the rule below stops the
+ * animation and leaves a solid ring, which is the point -- the state still
+ * reads, it just stops moving.
+ */
+.gs-chapter-pulse {
+  animation: gs-chapter-pulse 1.8s var(--ease) infinite;
+}
+
 /**
  * First-paint entrance. Set --i on the element (or let .gs-stagger set it from
  * source order) to place it in the 60ms cascade. Five groups max, so the page

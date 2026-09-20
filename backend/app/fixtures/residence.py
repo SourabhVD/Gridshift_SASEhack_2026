@@ -51,6 +51,7 @@ from .generator import (
     next_day_iso,
     pv_priority_charge,
     energy_phrase,
+    number_word,
     round1,
     solver_label,
     round2,
@@ -902,10 +903,10 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             f"{len(r.hvac_drift_hours)} hours and no longer."
         )
         approval_note = (
-            f"Two of the three actions are invisible to the household, but letting the "
+            "The pack and the charger are invisible to the household, but letting the "
             f"house run to {COMFORT_BAND_F[1]}F {_when_text(r.hvac_drift_hours)} is not, "
-            "and neither is deciding when somebody else's car charges. Sending all three "
-            "to the owner."
+            "and neither is deciding when somebody else's car charges. Sending "
+            f"{'both' if r.action_rows == 2 else 'all ' + number_word(r.action_rows)} to the owner."
         )
     else:
         hvac_plan = "leave the heat pump untouched"
@@ -916,8 +917,8 @@ def build_script(r: "OptimizationResult") -> list[Step]:
         approval_note = (
             "Nothing here is felt indoors: the setpoint does not move and the pack is "
             "silent. What still needs a person is deciding when somebody else's car "
-            "charges, so all three actions go to the owner rather than the two that "
-            "changed."
+            f"charges, so {'both' if r.action_rows == 2 else 'all ' + number_word(r.action_rows)} "
+            "actions go to the owner."
         )
 
     if r.ev_kwh_after_window > 0:
@@ -1104,7 +1105,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             tool="save_action_plan",
             invoke="save_action_plan",
             message=(
-                f"Committing a {ACTION_COUNT}-action plan: {ev_plan}, {battery_plan}, and "
+                f"Committing a {number_word(r.action_rows)}-action plan: {ev_plan}, {battery_plan}, and "
                 f"{hvac_plan}. Worth about ${r.demand_charge_avoided_usd:.2f} of avoided "
                 "demand-response penalty this month."
             ),
@@ -1116,7 +1117,7 @@ def build_script(r: "OptimizationResult") -> list[Step]:
             message=approval_note,
             payload={
                 "requires_approval": True,
-                "action_count": ACTION_COUNT,
+                "action_count": r.action_rows,
                 "approvers": ["homeowner"],
             },
         ),
