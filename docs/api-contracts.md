@@ -12,8 +12,8 @@ renaming or removing one is not. The authoritative field list is
 [`frontend/src/types/api.ts`](../frontend/src/types/api.ts) — when this document
 and those types disagree, the types win. The in-memory mock in
 [`frontend/src/mocks/`](../frontend/src/mocks/) is an executable example of
-every payload below, and a runnable FastAPI implementation lives in
-[`backend/reference/`](../backend/reference).
+every payload below, and the runnable FastAPI implementation lives in
+[`backend/app/`](../backend/app).
 
 Every example in this document is the real `sea-office-001` payload, taken from
 the fixtures, not invented.
@@ -1394,7 +1394,7 @@ Store all timestamps as `TIMESTAMPTZ` and render them in `buildings.timezone`
 (already on the table, defaulting to `America/Los_Angeles`) on the way out.
 
 **Reference implementation.** A runnable FastAPI implementation of this contract
-is being written in parallel at [`backend/reference/`](../backend/reference).
+lives at [`backend/app/`](../backend/app).
 Where a detail here is ambiguous, that code is the tiebreaker after
 `frontend/src/types/api.ts`.
 

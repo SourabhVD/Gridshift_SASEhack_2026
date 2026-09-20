@@ -56,8 +56,8 @@ endpoint (see the table below). The exact payloads it has to return are
 defined by the TypeScript types in [`src/types/api.ts`](src/types/api.ts);
 the in-memory mock in [`src/mocks/mockServer.ts`](src/mocks/mockServer.ts)
 is an executable example of every response, and the runnable FastAPI
-reference in [`../backend/reference`](../backend/reference) implements the
-same contract in Python.
+backend in [`../backend/app`](../backend/app) implements the same contract
+in Python.
 
 One value is not an env var: `DEFAULT_BUILDING_ID` in `src/lib/store.tsx`
 (`sea-office-001`), the site the app opens on before anything is stored in
