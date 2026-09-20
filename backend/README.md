@@ -464,12 +464,20 @@ Holding all three levers at once is what buys the improvement:
 
 | Site | Heuristic cut | CP-SAT cut | Demand charge avoided |
 | --- | ---: | ---: | --- |
-| `sea-office-001` | 84.0 kW | 152.2 kW | $714 → $1,294 /mo |
-| `sea-hospital-002` | 92.0 kW | 139.9 kW | $782 → $1,189 /mo |
-| `sea-warehouse-003` | 115.0 kW | 266.3 kW | $978 → $2,264 /mo |
-| `sea-residence-004` | 9.3 kW | 10.0 kW | $79 → $85 /mo |
+| `sea-office-001` | 84.0 kW | 149.7 kW | $714 → $1,272 /mo |
+| `sea-hospital-002` | 92.0 kW | 126.2 kW | $782 → $1,073 /mo |
+| `sea-warehouse-003` | 115.0 kW | 193.6 kW | $978 → $1,646 /mo |
+| `sea-residence-004` | 9.3 kW | 8.8 kW | $79 → $75 /mo |
 
-All four solve to `OPTIMAL` in under 35 ms.
+All four solve to `OPTIMAL` in well under 100 ms.
+
+The residence is the one site where the heuristic posts a deeper cut, and the
+reason is worth knowing: **the solver holds the battery to end-of-day energy
+neutrality and the heuristic does not.** Without that constraint the solver
+discovered that discharging lowers both the peak and the bill, drained to the
+reserve floor and never bought the energy back — a saving that existed only
+because the model let it spend stored charge for free. The heuristic still has
+that freedom. Comparing the two on peak alone therefore flatters it.
 
 **There is no fallback behind it, on purpose.** Every constraint admits the
 untouched baseline and the baseline is fed in as a solution hint, so "no
@@ -479,7 +487,15 @@ formulation bug that ought to be loud. `test_optimizer_cpsat.py` pins that
 property along with the flow identity, energy conservation, the device limits
 and reproducibility.
 
-Three modelling decisions worth knowing before you change it:
+The objective runs in three passes rather than one weighted sum, so no later
+term can quietly buy back an earlier one: minimise the peak, pin it and
+minimise cost, then pin that and minimise how far the battery moves. That last
+pass exists because off-peak energy is a flat price here, so cycling the pack
+at 01:00 costs the model nothing and it will do it — producing a dispatch
+smeared over ten hours including one at midnight. Real cycling wears the pack,
+and this is the cheapest way to say so without inventing a degradation cost.
+
+Four modelling decisions worth knowing before you change it:
 
 * **Tenths of a kW, not watts.** Every value the solver returns is already on
   the 0.1 kW grid the wire format uses, so the flow identity stays exact after
@@ -495,6 +511,13 @@ Three modelling decisions worth knowing before you change it:
   shaved. Downstream, `validate_schedule` re-walks the state of charge in
   percent and rounds every hour, so an exact landing here reads as a fraction
   below the floor there and the agent rejects its own plan.
+
+* **Charging is inside the grid curve, so it is never billed twice.** The
+  heuristic's recharge happens after the modelled day, so `_assemble` adds it
+  to the bill separately. The solver charges within the day, where a negative
+  battery hour already raises `grid_kw` and is already paid for at that hour's
+  price. Passing the charged kWh to `_assemble` as well made the optimized day
+  cost *more* than doing nothing.
 
 Fixed seed, single worker: the same building produces the same plan every run,
 because a demo whose numbers move between takes is worse than a slower one.

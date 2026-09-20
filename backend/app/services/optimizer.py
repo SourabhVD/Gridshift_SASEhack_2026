@@ -137,8 +137,19 @@ class OptimizationResult:
 
     @property
     def battery_flat_kw(self) -> float:
+        """
+        The rate the battery action is described by.
+
+        The heuristic discharges flat, so this is simply that value. A solver
+        can vary the rate hour to hour, and then the headline is the deepest
+        one -- the figure the inverter has to support. It must never be 0 for
+        a real dispatch: returning that produced an action titled "Discharge
+        battery at 0 kW" in a live run.
+        """
         values = set(self.battery_discharge_kw.values())
-        return round1(next(iter(values))) if len(values) == 1 else 0.0
+        if not values:
+            return 0.0
+        return round1(next(iter(values)) if len(values) == 1 else max(values))
 
     @property
     def hours_over_threshold(self) -> int:
@@ -610,6 +621,16 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
         # Positive kW discharges into the building and drains the pack.
         model.Add(soc[h] == previous - batt[h])
 
+    # The pack must end the day no worse off than it started. Without this the
+    # solver discovers that discharging always lowers both the peak and the
+    # bill, drains to the reserve floor and never buys the energy back -- a
+    # saving that exists only because the model let it spend stored energy for
+    # free. It showed up as a battery "action" smeared across ten hours,
+    # including one at midnight, for 552 kWh against the heuristic's 270.
+    # Pinned to the baseline's own ending where that is lower, so a site whose
+    # authored curve ends down is still feasible.
+    model.Add(soc[HOURS - 1] >= min(start_d, baseline_soc_d[-1]))
+
     # --- The flow identity, hour by hour ------------------------------------
     grid_cap = max(base_d) + ev_cap_d + max(hvac_base_d, default=0) + shed_d + inverter_d
     baseline_grid_d = [_deci(v) for v in baseline_grid]
@@ -653,14 +674,34 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
         raise RuntimeError(f"CP-SAT returned {solver.StatusName(status)} on a model that admits the baseline")
     best_peak = solver.Value(peak)
 
-    # Phase 2: cheapest schedule that still hits that peak. Two solves rather
-    # than one weighted objective, so "minimise cost" cannot quietly buy a
-    # worse peak by being large enough.
+    # Phase 2: cheapest schedule that still hits that peak. Separate solves
+    # rather than one weighted objective, so "minimise cost" cannot quietly
+    # buy a worse peak by being large enough.
     model.Add(peak <= best_peak)
     model.Minimize(cost)
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):  # pragma: no cover
         raise RuntimeError(f"CP-SAT returned {solver.StatusName(status)} in the cost phase")
+    best_cost = solver.Value(cost)
+
+    # Phase 3: of the schedules that are equally cheap at that peak, take the
+    # one that moves the battery least. Off-peak energy is a flat price here,
+    # so cycling the pack at 01:00 costs the model nothing and it will happily
+    # do it -- producing a dispatch smeared over ten hours including one at
+    # midnight, which reads as noise rather than a decision. Real cycling is
+    # not free (the pack wears), and this is the cheapest way to say so
+    # without inventing a degradation cost. It cannot compromise the peak or
+    # the bill, because both are already pinned.
+    movement = []
+    for h in range(HOURS):
+        magnitude = model.NewIntVar(0, inverter_d, f"move_{h}")
+        model.AddAbsEquality(magnitude, batt[h])
+        movement.append(magnitude)
+    model.Add(cost <= best_cost)
+    model.Minimize(sum(movement))
+    status = solver.Solve(model)
+    if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):  # pragma: no cover
+        raise RuntimeError(f"CP-SAT returned {solver.StatusName(status)} in the churn phase")
 
     ev_out = [solver.Value(v) / DECI for v in ev]
     hvac_out = [solver.Value(v) / DECI for v in hvac]
@@ -688,7 +729,13 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
         ev_delta=ev_delta,
         hvac_delta=hvac_delta,
         discharge=discharge,
-        recharge_kwh=round1(sum(-v for v in batt_out if v < 0)),
+        # Zero, and it must be. _assemble adds this to the bill on top of the
+        # grid curve, which is right for the heuristic because that recharge
+        # happens after the modelled day. Here charging IS in the grid curve --
+        # a negative battery hour raises grid_kw and is already paid for at
+        # that hour's price. Passing the charged kWh as well bills it twice,
+        # which showed up as the optimized day costing more than doing nothing.
+        recharge_kwh=0.0,
         # Zero, and it has to be: this field is the energy re-queued *outside*
         # the modelled window, and the model conserves EV energy inside the 24
         # hours exactly. validate_schedule adds it to the sum of the deltas and

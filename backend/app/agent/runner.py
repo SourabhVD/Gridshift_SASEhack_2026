@@ -57,6 +57,29 @@ log = logging.getLogger("gridshift.agent")
 #: Hard stop on the Gemini loop so a confused model cannot bill forever.
 MAX_MODEL_TURNS = 16
 
+#: Attempts per model turn, and the first backoff. Doubles each time, so the
+#: worst case is roughly 1 + 2 + 4 + 8 seconds before a turn is given up on.
+MODEL_RETRIES = 5
+MODEL_RETRY_BASE_S = 1.0
+
+#: HTTP statuses worth another attempt: 503 is the free tier's "experiencing
+#: high demand", 429 is rate limiting, 500 and 504 are Google's own faults.
+#: 403 and 404 are not here on purpose -- a wrong key, an unenabled project or
+#: a retired model id will never fix itself, and retrying only delays the
+#: message someone has to read.
+RETRYABLE_STATUS = (429, 500, 503, 504)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for a failure that another attempt might get past."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code in RETRYABLE_STATUS
+    text = str(exc)
+    return any(str(status) in text for status in RETRYABLE_STATUS) and (
+        "UNAVAILABLE" in text or "RESOURCE_EXHAUSTED" in text or "INTERNAL" in text
+    )
+
 SYSTEM_PROMPT = """\
 You are GridShift, an energy operations agent for commercial and residential \
 buildings. A run starts because today's load forecast tripped a peak-risk \
@@ -308,14 +331,44 @@ async def run_gemini(invoker: ToolInvoker) -> None:
         types.Content(role="user", parts=[types.Part(text=_user_prompt(invoker.ctx.fixture))])
     ]
 
+    async def generate() -> Any:
+        """
+        One model turn, retried through a transient refusal.
+
+        The free tier answers 503 "experiencing high demand" often enough to
+        lose whole runs: observed failing at turn 1 and again at turn 3 of the
+        same demo, minutes apart. Unretried, a spike on Google's side ends the
+        run, the feed stops mid-thought and /plan keeps 404ing -- all correct
+        behaviour, none of it something to discover on stage.
+        """
+        last: Exception | None = None
+        for attempt in range(MODEL_RETRIES):
+            try:
+                return await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.gemini_model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised unless retryable
+                if not _is_transient(exc):
+                    raise
+                last = exc
+                delay = MODEL_RETRY_BASE_S * (2**attempt)
+                log.warning(
+                    "model call failed (%s), retrying in %.0fs [%d/%d]",
+                    type(exc).__name__,
+                    delay,
+                    attempt + 1,
+                    MODEL_RETRIES,
+                )
+                await asyncio.sleep(delay)
+        assert last is not None  # the loop only exits here after a failure
+        raise last
+
     approved = False
     for turn in range(MAX_MODEL_TURNS):
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=settings.gemini_model,
-            contents=contents,
-            config=config,
-        )
+        response = await generate()
 
         candidate = (response.candidates or [None])[0]
         parts = list(getattr(getattr(candidate, "content", None), "parts", None) or [])

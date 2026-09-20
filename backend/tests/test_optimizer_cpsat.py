@@ -70,9 +70,77 @@ def test_never_worse_than_doing_nothing(fixture, solved) -> None:
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=IDS)
-def test_at_least_as_good_as_the_heuristic(fixture, solved) -> None:
-    """A solver that loses to a fixed-order pass is not earning its place."""
-    assert solved[fixture.id].peak_reduction_kw >= optimize(fixture).peak_reduction_kw - 1e-9
+def test_the_pack_ends_the_day_no_worse_off(fixture, solved) -> None:
+    """
+    Energy neutrality, and it is not optional.
+
+    Discharging always lowers both the peak and the bill, so without this the
+    solver drains to the reserve floor and never buys the energy back -- a
+    saving that exists only because the model let it spend stored energy for
+    free. The heuristic is not held to this, which is why it can post a deeper
+    cut on a site where the battery is the binding lever.
+    """
+    result = solved[fixture.id]
+    assert result.optimized_parts.soc[-1] >= min(
+        result.start_soc_pct, fixture.baseline_parts.soc[-1]
+    ) - 0.1
+
+
+@pytest.mark.parametrize("fixture", FIXTURES, ids=IDS)
+def test_the_plan_actually_saves_money(fixture, solved) -> None:
+    """
+    Charging is inside the grid curve, so it must not be billed again.
+
+    `_assemble` adds a recharge cost on top for the heuristic, whose recharge
+    happens after the modelled day. Passing the solver's charged kWh there too
+    billed it twice and made the optimized day cost more than doing nothing.
+    """
+    assert solved[fixture.id].savings_usd > 0
+
+
+@pytest.mark.parametrize("fixture", FIXTURES, ids=IDS)
+def test_the_battery_action_has_a_real_rate(fixture, solved) -> None:
+    """
+    A varying dispatch must not report 0 kW.
+
+    `battery_flat_kw` returned 0 for any non-flat profile, which a live run
+    turned into an action titled "Discharge battery at 0 kW".
+    """
+    result = solved[fixture.id]
+    if result.battery_discharge_kw:
+        assert result.battery_flat_kw > 0
+        assert result.battery_flat_kw == pytest.approx(
+            max(result.battery_discharge_kw.values()), abs=0.05
+        )
+
+
+@pytest.mark.parametrize("fixture", FIXTURES, ids=IDS)
+def test_the_dispatch_is_not_smeared_across_the_day(fixture, solved) -> None:
+    """
+    Off-peak energy is a flat price, so cycling the pack at 01:00 costs the
+    model nothing and it will do it unless told otherwise. The third solve
+    pass minimises battery movement once peak and cost are both pinned, which
+    turns a dispatch spread over ten hours into one that reads as a decision.
+    """
+    hours = sorted(solved[fixture.id].battery_discharge_kw)
+    if len(hours) > 1:
+        assert max(hours) - min(hours) <= 12, f"{fixture.id} discharges at {hours}"
+
+
+def test_the_solver_wins_where_it_is_not_holding_itself_back(solved) -> None:
+    """
+    CP-SAT must beat the fixed-order pass on most sites, or the machinery
+    buys nothing. It is not required to win everywhere: it obeys end-of-day
+    energy neutrality and the heuristic does not, so on a site where the
+    battery is the binding lever the heuristic can post a deeper cut by
+    spending charge it never replaces.
+    """
+    wins = [
+        f.id
+        for f in FIXTURES
+        if solved[f.id].peak_reduction_kw > optimize(f).peak_reduction_kw + 0.05
+    ]
+    assert len(wins) >= len(FIXTURES) - 1, f"CP-SAT only won on {wins}"
 
 
 @pytest.mark.parametrize("fixture", FIXTURES, ids=IDS)
@@ -150,19 +218,3 @@ def test_the_mode_switch_selects_the_right_optimizer(monkeypatch) -> None:
         assert solve(fixture).status == "OPTIMAL"
     finally:
         get_settings.cache_clear()
-
-
-def test_the_solver_beats_the_heuristic_somewhere(solved) -> None:
-    """
-    Not a tie on every site, or the extra machinery buys nothing.
-
-    Trading the levers against each other is the whole point: the solver will
-    discharge harder to buy the HVAC a shorter drift when that lowers the peak,
-    which a fixed-order pass cannot find.
-    """
-    better = [
-        f.id
-        for f in FIXTURES
-        if solved[f.id].peak_reduction_kw > optimize(f).peak_reduction_kw + 0.05
-    ]
-    assert better, "CP-SAT matched the heuristic everywhere; check the objective"
