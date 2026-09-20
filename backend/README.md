@@ -95,7 +95,7 @@ memory, so a second worker would answer `/events` for a run it never saw.
 | --- | --- | --- |
 | `GRIDSHIFT_AGENT` | `fake` | `fake` replays the scripted run; `gemini` calls the model. `gemini` with no key logs a warning and degrades to `fake`. |
 | `GEMINI_API_KEY` | *(empty)* | Google AI Studio key. Read only by `app/agent/runner.py`; it never leaves the backend. |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model id for `GRIDSHIFT_AGENT=gemini`. |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Model id for `GRIDSHIFT_AGENT=gemini`. `gemini-2.5-flash` is documented as stable but the API returns 404 for keys created after its retirement. |
 | `GRIDSHIFT_FORECAST` | `fixtures` | `fixtures` serves the ported demo curves; `ml` calls the `ml` package in process; `backtest` serves a real day from disk. Anything unavailable falls back to fixtures with one logged warning. |
 | `GRIDSHIFT_ML_MODEL_PATH` | `ml/artifacts/load_forecaster.joblib` | Trained bundle. Relative paths resolve from the repo root. |
 | `GRIDSHIFT_BACKTEST_PATH` | `data/processed/backtests` | Where `ml/evaluate_forecast_date.py` writes its per-date directories. |

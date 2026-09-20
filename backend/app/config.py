@@ -23,7 +23,14 @@ PROJECT_ROOT = PACKAGE_ROOT.parent
 # the git repository root, so ml/ can be found from here
 REPO_ROOT = PROJECT_ROOT.parent
 
+# backend/.env first, then the repository root's. load_dotenv does not override
+# a name that is already set, so the backend's own file wins where both declare
+# one, and the root file supplies the rest. The root .env is where the data
+# pipeline already keeps DATABASE_URL, so without this fallback a key pasted
+# there -- the obvious place -- is silently invisible here, and the agent
+# degrades to fake mode with nothing to say why.
 load_dotenv(PROJECT_ROOT / ".env")
+load_dotenv(REPO_ROOT / ".env")
 
 
 def _csv(raw: str) -> list[str]:
@@ -37,7 +44,9 @@ class Settings:
     #: 'fake' replays the scripted run; 'gemini' calls google-genai.
     agent_mode: str = "fake"
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.5-flash"
+    #: Google retired gemini-2.5-flash for new API keys: the docs still list
+    #: it as stable, but the API answers 404 and names 3.6-flash instead.
+    gemini_model: str = "gemini-3.6-flash"
 
     #: 'fixtures' serves the ported demo curves, 'ml' calls the ml package in
     #: process, 'backtest' reads what ml/evaluate_forecast_date.py left on disk.
@@ -89,7 +98,7 @@ def get_settings() -> Settings:
     return Settings(
         agent_mode=os.getenv("GRIDSHIFT_AGENT", "fake").strip().lower() or "fake",
         gemini_api_key=(os.getenv("GEMINI_API_KEY") or "").strip(),
-        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip(),
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash").strip(),
         forecast_mode=os.getenv("GRIDSHIFT_FORECAST", "fixtures").strip().lower() or "fixtures",
         ml_model_path=_resolve(
             os.getenv("GRIDSHIFT_ML_MODEL_PATH", ""),
