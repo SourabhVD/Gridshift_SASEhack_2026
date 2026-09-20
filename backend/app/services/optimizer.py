@@ -805,6 +805,16 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
     ev_out = [solver.Value(v) / DECI for v in ev]
     hvac_out = [solver.Value(v) / DECI for v in hvac]
     batt_out = [solver.Value(v) / DECI for v in batt]
+    # The model carries SOC as a solved variable and pins its last hour at or
+    # above where the day started. Re-deriving it downstream by walking the
+    # published battery series loses that: the series is rounded to 0.1 kW an
+    # hour, and 24 of those roundings can drift the walk a tenth of a point
+    # below a landing the solver made exactly. Which way it drifts depends on
+    # which optimal vertex CP-SAT happens to return, so the same code passed on
+    # Windows and failed on Linux for the hospital -- 75.8% against a 76.0%
+    # start, for 1.6 kWh on an 800 kWh pack. Publishing the model's own answer
+    # removes the question rather than widening a tolerance around it.
+    soc_pct = [round1(solver.Value(v) / capacity_d * 100) for v in soc]
 
     ev_delta = {
         h: round1(ev_out[h] - baseline.ev[h])
@@ -846,6 +856,7 @@ def solve_with_ortools(fixture: "BuildingFixture") -> OptimizationResult:
         elapsed_ms=int((time.perf_counter() - started) * 1000),
         solve_time_ms=int(solver.WallTime() * 1000),
         status=solver.StatusName(status),
+        soc=soc_pct,
     )
 
 
