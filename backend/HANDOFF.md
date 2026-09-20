@@ -89,6 +89,46 @@ fake mode, so a missing key never breaks a demo.
 
 ## 4. Make the forecast real
 
+Two routes. Prefer the first.
+
+### 4a. A real day from the database: `GRIDSHIFT_FORECAST=backtest`
+
+`ml/evaluate_forecast_date.py` is a backtest harness, not a live forecaster: it
+refuses a date the database holds no measured load for, and it retrains from
+scratch on every call. Neither belongs inside a request, so run it once and let
+the backend read what it left behind.
+
+```bash
+# repository root, DATABASE_URL in ./.env
+python -m ml.evaluate_forecast_date --date 2018-07-15
+```
+
+```bash
+cd backend
+GRIDSHIFT_FORECAST=backtest uvicorn app.main:app --reload --port 8000
+```
+
+The office then serves that day's real predictions against its real metered
+load. `GET /health` grows a `backtest` block naming the dates it found and what
+it is serving — the fallback to fixtures is silent, so look there first if the
+curves still look like the demo.
+
+**What is real:** the shape of the day and the gap between predicted and
+measured. **What is presentational:** the absolute kW and the date. Both series
+are multiplied by one factor onto this site's own peak and published on the
+demo day, because the optimizer's levers, the device facts and the agent's
+narration are all authored at that scale. `/health` reports the real kW and the
+factor, so nothing is concealed. README.md explains why, and what it would take
+to publish raw kW end to end.
+
+`app/services/backtest.py` reads one CSV and two JSON files using the standard
+library alone. **No credential reaches the backend and no query runs in the
+request path.** The database holds one building, so the other three sites keep
+their fixture curves. Flows are still synthesised: the model predicts total
+load only.
+
+### 4b. The model in process: `GRIDSHIFT_FORECAST=ml`
+
 ```
 GRIDSHIFT_FORECAST=ml
 GRIDSHIFT_ML_MODEL_PATH=ml/artifacts/load_forecaster.joblib

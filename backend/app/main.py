@@ -66,7 +66,55 @@ def create_app() -> FastAPI:
 
     @app.get("/health", tags=["meta"])
     def health() -> dict[str, object]:
-        """Liveness plus the configuration actually in force."""
+        """
+        Liveness plus the configuration actually in force.
+
+        Read fresh rather than closed over, so this reports what the process is
+        really doing after a test or a reload has changed the environment.
+        """
+        settings = get_settings()
+        extra: dict[str, object] = {}
+        if settings.forecast_mode == "backtest":
+            # The fallback to fixtures is silent by design, and which day is on
+            # screen is not on the wire anywhere else. This is where you check
+            # whether the backtest actually took.
+            from .services import backtest as backtest_reader  # noqa: PLC0415
+
+            block: dict[str, object] = {
+                "path": str(settings.backtest_path),
+                "available": backtest_reader.available(settings.backtest_path),
+                "requested_date": settings.backtest_date or "latest",
+                "building": settings.backtest_building,
+            }
+            # The curve is mapped onto the site's scale so the plan and the
+            # agent stay coherent with it. That is a presentational choice and
+            # it must not be invisible: the real kW and the factor applied are
+            # reported here, next to the day they came from.
+            try:
+                result = backtest_reader.load(
+                    settings.backtest_path, settings.backtest_date
+                )
+            except backtest_reader.BacktestUnavailable as exc:
+                block["serving"] = None
+                block["why_not"] = str(exc)
+            else:
+                from .fixtures import get_fixture  # noqa: PLC0415
+                from .services.forecast import onto_site_scale  # noqa: PLC0415
+
+                fixture = get_fixture(settings.backtest_building)
+                block["serving"] = {
+                    "date": result.date,
+                    "timezone": result.timezone or "unknown",
+                    "algorithm": result.algorithm,
+                    "real_peak_kw": round(max(result.predicted_kw), 1),
+                    "real_measured_peak_kw": round(max(result.actual_kw), 1),
+                    "scaled_onto_site_by": (
+                        round(onto_site_scale(fixture, result.predicted_kw), 4)
+                        if fixture is not None
+                        else None
+                    ),
+                }
+            extra["backtest"] = block
         return {
             "status": "ok",
             "agent": settings.effective_agent_mode,
@@ -75,6 +123,7 @@ def create_app() -> FastAPI:
             "forecast": settings.forecast_mode,
             "buildings": list(BUILDING_IDS),
             "cors_origins": settings.cors_origins,
+            **extra,
         }
 
     logging.getLogger("gridshift").info(

@@ -39,10 +39,21 @@ class Settings:
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.5-flash"
 
-    #: 'fixtures' serves the ported demo curves; 'ml' calls the ml package.
+    #: 'fixtures' serves the ported demo curves, 'ml' calls the ml package in
+    #: process, 'backtest' reads what ml/evaluate_forecast_date.py left on disk.
     forecast_mode: str = "fixtures"
     ml_model_path: Path = field(default_factory=lambda: REPO_ROOT / "ml" / "artifacts" / "load_forecaster.joblib")
     ml_package_path: Path = field(default_factory=lambda: REPO_ROOT / "ml")
+
+    #: Where evaluate_forecast_date writes its per-date directories.
+    backtest_path: Path = field(
+        default_factory=lambda: REPO_ROOT / "data" / "processed" / "backtests"
+    )
+    #: Which date to serve. Empty means the most recent one present.
+    backtest_date: str = ""
+    #: The one site the backtest speaks for. The database holds a single
+    #: building; every other slug keeps its fixture curve.
+    backtest_building: str = "sea-office-001"
 
     cors_origins: list[str] = field(default_factory=lambda: ["http://localhost:3000"])
 
@@ -80,6 +91,15 @@ def get_settings() -> Settings:
             REPO_ROOT / "ml" / "artifacts" / "load_forecaster.joblib",
         ),
         ml_package_path=_resolve(os.getenv("GRIDSHIFT_ML_PATH", ""), REPO_ROOT / "ml"),
+        backtest_path=_resolve(
+            os.getenv("GRIDSHIFT_BACKTEST_PATH", ""),
+            REPO_ROOT / "data" / "processed" / "backtests",
+        ),
+        backtest_date=os.getenv("GRIDSHIFT_BACKTEST_DATE", "").strip(),
+        backtest_building=(
+            os.getenv("GRIDSHIFT_BACKTEST_BUILDING", "sea-office-001").strip()
+            or "sea-office-001"
+        ),
         cors_origins=_csv(os.getenv("CORS_ORIGINS", "http://localhost:3000")),
         agent_speed=float(os.getenv("GRIDSHIFT_AGENT_SPEED", "1.0")),
     )

@@ -78,8 +78,11 @@ python -m pytest                     # 54 backend tests, about 2 seconds
 | `GRIDSHIFT_AGENT` | `fake` | `fake` replays the scripted run; `gemini` calls the model. `gemini` with no key logs a warning and degrades to `fake`. |
 | `GEMINI_API_KEY` | *(empty)* | Google AI Studio key. Read only by `app/agent/runner.py`; it never leaves the backend. |
 | `GEMINI_MODEL` | `gemini-2.5-flash` | Model id for `GRIDSHIFT_AGENT=gemini`. |
-| `GRIDSHIFT_FORECAST` | `fixtures` | `fixtures` serves the ported demo curves; `ml` calls the `ml` package and falls back to fixtures with a logged warning. |
+| `GRIDSHIFT_FORECAST` | `fixtures` | `fixtures` serves the ported demo curves; `ml` calls the `ml` package in process; `backtest` serves a real day from disk. Anything unavailable falls back to fixtures with one logged warning. |
 | `GRIDSHIFT_ML_MODEL_PATH` | `ml/artifacts/load_forecaster.joblib` | Trained bundle. Relative paths resolve from the repo root. |
+| `GRIDSHIFT_BACKTEST_PATH` | `data/processed/backtests` | Where `ml/evaluate_forecast_date.py` writes its per-date directories. |
+| `GRIDSHIFT_BACKTEST_DATE` | *(empty)* | Which day to serve. Empty means the most recent one present. |
+| `GRIDSHIFT_BACKTEST_BUILDING` | `sea-office-001` | The one site the backtest speaks for; every other slug keeps its fixture curve. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
 | `GRIDSHIFT_AGENT_SPEED` | `1.0` | Multiplies every simulated agent delay. `0` finishes a run instantly — the test suite sets this. |
 
@@ -251,6 +254,98 @@ Two things to fix when you take this over:
   **`GRIDSHIFT_FORECAST=ml` must keep synthesising flows until there is a real
   device model behind the optimizer.** The per-device numbers are the
   optimizer's output, not the forecaster's.
+
+---
+
+## Serving a real day: `GRIDSHIFT_FORECAST=backtest`
+
+`ml/evaluate_forecast_date.py` is a **backtest harness, not a live
+forecaster**, and it is worth being precise about that before anyone wires it
+into a route. Two things in it decide the shape of this integration:
+
+* It refuses a date unless the database already holds 24 hours of **measured**
+  load for it. It can only forecast days you already know the answer to, which
+  is exactly right for evaluating a model and is not a next-day prediction.
+* It retrains from scratch on every call — a feature ablation that fits a model
+  per feature group, then a final fit. That does not belong inside an HTTP
+  request.
+
+So the backend never calls it. You run it once, offline, and this mode reads
+what it left behind:
+
+```bash
+# from the repository root, with DATABASE_URL in ./.env
+python -m ml.evaluate_forecast_date --date 2018-07-15
+# writes data/processed/backtests/2018-07-15/
+```
+
+```bash
+cd backend
+GRIDSHIFT_FORECAST=backtest uvicorn app.main:app --reload --port 8000
+```
+
+`GET /health` then carries a `backtest` block naming the directory, the dates
+it found and the site they are served as — the fallback to fixtures is silent
+by design, so that block is how you check the mode actually took.
+
+### What is real, and what is not
+
+Be precise about this, especially on a slide.
+
+**Real:** the shape of the day, and the gap between predicted and measured.
+`predicted_load_kw` is a real model's output for a real date, and
+`actual_load_kw` is what the building actually drew — both straight out of the
+harness, not synthesised.
+
+**Presentational:** the absolute kW and the calendar date. Both series are
+multiplied by one factor that maps the day's peak onto this site's own peak,
+and they are published on the demo day. `GET /health` reports the real kW and
+the factor applied, so this is not hidden:
+
+```json
+"serving": { "date": "2018-07-15", "algorithm": "LightGBM",
+             "real_peak_kw": 73.4, "real_measured_peak_kw": 76.9,
+             "scaled_onto_site_by": 7.1117 }
+```
+
+Because both series are scaled by the same number, the model's relative error
+is untouched: the visible gap between the two lines is the real one.
+
+**Why not publish the raw kW?** Coherence. The optimizer's levers, the device
+facts `validate_schedule` checks them against, and the agent's scripted
+narration are all authored at the site's scale and on the demo day. Serving 73
+kW on `/forecast` put a 73 kW chart beside a 522 kW impact chart on two
+different dates, and made `get_energy_forecast` compare a 73 kW day against a
+450 kW billing threshold and report zero peak hours. Making the raw scale work
+end to end means scaling the policy deltas, the device facts and the authored
+prose too — worth doing when the optimizer stops being a heuristic, not before.
+
+`actual_load_kw` stops at "now", the way `metered_actuals` does. The file knows
+the whole day; publishing the future half would move the dashboard's time
+cursor and claim a measurement that has not happened.
+
+Three things this mode deliberately does **not** do:
+
+* **No database access, ever.** `app/services/backtest.py` reads a CSV and two
+  JSON files using only the standard library. No credential reaches the
+  backend, and the mode works on an install with neither pandas nor
+  scikit-learn. It also needs no timezone database, which Python does not ship
+  on Windows: the day's offset is derived by subtracting the first row's UTC
+  instant from the directory's date.
+* **It speaks for one site.** The database holds a single building, so only
+  `GRIDSHIFT_BACKTEST_BUILDING` is served from it. Every other slug keeps its
+  fixture curve unchanged.
+* **It does not invent flows.** The model predicts total load, so the component
+  split is still synthesised through `flows_for_grid()`. The per-device numbers
+  are the optimizer's output, not the forecaster's.
+
+Known limitation, on two days a year: the harness selects a window of
+`local_start + Timedelta(days=1)`, which is 24 hours of elapsed time rather
+than a calendar day. On a daylight-saving transition that window is not quite
+the local day, and the `utc_offset` reported in `/health` is the one in force
+at midnight rather than for the whole day. Neither affects the served curve,
+which is published on the demo day in file order, but pick a different date if
+you want the reported metadata to be exact.
 
 ---
 

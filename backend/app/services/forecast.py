@@ -2,27 +2,48 @@
 The forecast service.
 
 GRIDSHIFT_FORECAST=fixtures (the default) publishes the ported demo curves.
-GRIDSHIFT_FORECAST=ml calls the teammate's `ml` package: it loads the trained
-bundle, runs `forecast_next_24_hours`, and maps the 24 predictions into
-`predicted_load_kw`.
+GRIDSHIFT_FORECAST=ml calls the teammate's `ml` package in process: it loads
+the trained bundle, runs `forecast_next_24_hours`, and maps the 24 predictions
+into `predicted_load_kw`.
+GRIDSHIFT_FORECAST=backtest reads what `ml/evaluate_forecast_date.py` left on
+disk for one real day -- a real model's predictions against real metered load,
+for the one building the database holds. Nothing in the request path touches
+the database, loads a model or retrains, so no credential reaches this service.
+Every other site keeps its fixture curve, because there is no data for it.
 
-The ml path only replaces the *grid* curve. A regression on total load says
-nothing about how that load splits between the base, the EV bays, the chillers
-and the array -- so the flows are synthesised with the same helper the fixtures
-use: the authored component shapes are held and `base_kw` is re-solved through
+What is real in that mode, and what is not, is worth stating plainly. The shape
+of the day and the gap between predicted and measured are the model's, exactly.
+The absolute kW and the calendar date are the site's demo values: both series
+are multiplied by one factor that maps the day's peak onto this site's own, and
+they are published on the demo day. That is a presentational choice, and
+`/health` reports the real kW and the factor so it is not a hidden one.
+
+The reason is coherence. The optimizer's levers, the device facts they are
+validated against and the agent's scripted narration are all authored at the
+site's scale and on the demo day. Publishing raw kW put a 73 kW forecast beside
+a 522 kW impact chart, on two different dates, in the same dashboard.
+
+None of these paths replace anything but the *grid* curve. A regression on
+total load says nothing about how that load splits between the base, the EV
+bays, the chillers and the array -- so the flows are synthesised with the same
+helper the fixtures use: the authored component shapes are held and `base_kw`
+is re-solved through
 
     base_kw = grid_kw - ev_kw - hvac_kw + solar_kw + battery_kw
 
-which keeps the identity exact at every hour. When the ml package, the model
-artifact or the history CSV is missing, the service logs a warning and falls
-back to fixtures rather than failing the request: a dashboard that cannot draw
-a forecast is worse than one drawing the demo's.
+which keeps the identity exact at every hour.
+
+When the ml package, the model artifact, the history CSV or the backtest
+directory is missing, the service logs a warning and falls back to fixtures
+rather than failing the request: a dashboard that cannot draw a forecast is
+worse than one drawing the demo's.
 """
 
 from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 from typing import Any
 
 from ..config import get_settings
@@ -38,11 +59,14 @@ from ..fixtures.generator import (
     round1,
     to_flows,
 )
+from . import backtest as backtest_reader
 
 log = logging.getLogger("gridshift.forecast")
 
 #: Set once the ml import has been tried, so a broken install warns once.
 _ML_WARNED = False
+#: Same, for the backtest directory.
+_BACKTEST_WARNED = False
 
 
 class UnknownBuilding(Exception):
@@ -61,11 +85,30 @@ def require_fixture(building_id: str) -> BuildingFixture:
 # --------------------------------------------------------------------------- #
 
 
+def onto_site_scale(fixture: BuildingFixture, values: list[float]) -> float:
+    """
+    The factor that maps a curve's peak onto this site's own peak.
+
+    The real building in the database draws a fraction of what the demo office
+    does, and every consumer of a curve downstream -- the optimizer's levers,
+    the device facts they are checked against, the agent's scripted narration
+    -- is authored at the site's scale. Publishing real kW on the forecast
+    while the plan stayed at fixture scale put a 73 kW chart next to a 522 kW
+    impact chart, so the curve is mapped onto the site instead. The shape and
+    the predicted-to-measured relationship survive that exactly, because both
+    series are multiplied by the same number.
+    """
+    peak = max(values) if values else 0.0
+    if peak <= 0:
+        return 1.0
+    return max(fixture.baseline_grid) / peak
+
+
 def flows_for_grid(fixture: BuildingFixture, grid_kw: list[float]) -> FlowComponents:
     """
     Hold the authored component shapes and re-solve base_kw for a new grid
-    curve. This is the one helper both the fixture path and the ml path use,
-    so `flows.grid_kw == predicted_load_kw` can never drift.
+    curve. This is the one helper every non-fixture path uses, so
+    `flows.grid_kw == predicted_load_kw` can never drift.
     """
     parts = fixture.baseline_parts
     return FlowComponents(
@@ -155,32 +198,156 @@ def _predict_with_ml(fixture: BuildingFixture) -> list[float] | None:
 # --------------------------------------------------------------------------- #
 
 
-def predicted_load_kw(fixture: BuildingFixture) -> tuple[list[float], str]:
-    """The 24-hour grid curve and the source it came from."""
-    if get_settings().forecast_mode == "ml":
+# --------------------------------------------------------------------------- #
+# The backtest path                                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _load_backtest(fixture: BuildingFixture) -> backtest_reader.Backtest | None:
+    """
+    The stored backtest for this site, or None to fall back.
+
+    The database holds one building, so only the configured slug is served from
+    it. Returning None for the others is the normal case, not a failure, and is
+    not warned about.
+    """
+    global _BACKTEST_WARNED
+    settings = get_settings()
+
+    if fixture.id != settings.backtest_building:
+        return None
+
+    try:
+        result = backtest_reader.load(settings.backtest_path, settings.backtest_date)
+    except backtest_reader.BacktestUnavailable as exc:
+        if not _BACKTEST_WARNED:
+            _BACKTEST_WARNED = True
+            log.warning(
+                "GRIDSHIFT_FORECAST=backtest but no usable backtest (%s); "
+                "falling back to fixture curves",
+                exc,
+            )
+        return None
+
+    log.info(
+        "backtest %s for %s: %s, peak %.1f kW predicted against %.1f kW measured",
+        result.date,
+        fixture.id,
+        result.algorithm,
+        max(result.predicted_kw),
+        max(result.actual_kw),
+    )
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Public surface                                                               #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class Curve:
+    """
+    One day's grid curve and everything derived from the same source as it.
+
+    Summary and forecast both read this, so they can never disagree about the
+    peak, the threshold or which day is on screen.
+    """
+
+    grid: list[float]
+    #: 'fixtures' | 'ml' | 'backtest'.
+    source: str
+    threshold_kw: float
+    #: Metered load, None from "now" onward.
+    actual: list[float | None]
+    #: Component shapes for this curve, already scaled to it.
+    parts: FlowComponents
+    #: ISO 8601 with offset, for the start of each local hour.
+    hours: list[str]
+    #: ISO 8601 with offset, for "now" on the day being served.
+    now_iso: str
+
+
+def _fixture_curve(fixture: BuildingFixture, grid: list[float], source: str) -> Curve:
+    """A curve on the fixture's own scale and on the demo day."""
+    parts = fixture.baseline_parts if source == "fixtures" else flows_for_grid(fixture, grid)
+    return Curve(
+        grid=grid,
+        source=source,
+        threshold_kw=fixture.peak_threshold_kw,
+        actual=list(fixture.actual_load_kw),
+        parts=parts,
+        hours=[iso_hour(h) for h in range(HOURS)],
+        now_iso=NOW_ISO,
+    )
+
+
+def current_curve(fixture: BuildingFixture) -> Curve:
+    """The 24-hour curve this site is serving right now, and its provenance."""
+    mode = get_settings().forecast_mode
+
+    if mode == "backtest":
+        result = _load_backtest(fixture)
+        if result is not None:
+            # Both series are mapped onto this site's own peak by the same
+            # factor, so the model's relative error survives exactly while the
+            # rest of the app -- optimizer levers, device facts, the scripted
+            # narration, the plan's impact chart -- keeps working against
+            # numbers it was authored for.
+            scale = onto_site_scale(fixture, result.predicted_kw)
+            grid = [round1(v * scale) for v in result.predicted_kw]
+            # Measured load stops at "now", matching `metered_actuals` and what
+            # the contract says the field means. The file knows the whole day;
+            # publishing the future half would move the dashboard's time
+            # cursor and claim a measurement that has not happened.
+            actual: list[float | None] = [
+                round1(v * scale) if h < NOW_HOUR else None
+                for h, v in enumerate(result.actual_kw)
+            ]
+            return Curve(
+                grid=grid,
+                source="backtest",
+                # The site's own billing threshold, not the harness's
+                # 95th-percentile statistic: the curve now sits on the site's
+                # scale, and the optimizer and agent both bill against this.
+                threshold_kw=fixture.peak_threshold_kw,
+                actual=actual,
+                parts=flows_for_grid(fixture, grid),
+                hours=[iso_hour(h) for h in range(HOURS)],
+                now_iso=NOW_ISO,
+            )
+
+    if mode == "ml":
         values = _predict_with_ml(fixture)
         if values is not None:
-            return values, "ml"
-    return list(fixture.baseline_grid), "fixtures"
+            return _fixture_curve(fixture, values, "ml")
+
+    return _fixture_curve(fixture, list(fixture.baseline_grid), "fixtures")
+
+
+def predicted_load_kw(fixture: BuildingFixture) -> tuple[list[float], str]:
+    """The 24-hour grid curve and the source it came from."""
+    curve = current_curve(fixture)
+    return curve.grid, curve.source
 
 
 def build_forecast(building_id: str) -> dict[str, Any]:
     """The GET /api/forecast payload."""
     fixture = require_fixture(building_id)
-    grid, source = predicted_load_kw(fixture)
-    parts = fixture.baseline_parts if source == "fixtures" else flows_for_grid(fixture, grid)
-    flows = to_flows(grid, parts)
-    threshold = fixture.peak_threshold_kw
+    curve = current_curve(fixture)
+    grid = curve.grid
+    flows = to_flows(grid, curve.parts)
+    threshold = curve.threshold_kw
 
     payload = {
         "building_name": fixture.name,
-        "generated_at": NOW_ISO,
+        "generated_at": curve.now_iso,
         "peak_threshold_kw": threshold,
         "points": [
             {
-                "timestamp": iso_hour(h),
+                "timestamp": curve.hours[h],
                 "predicted_load_kw": grid[h],
-                "actual_load_kw": fixture.actual_load_kw[h],
+                "actual_load_kw": curve.actual[h],
                 "price_per_kwh": PRICE_PER_KWH[h],
                 "is_peak": grid[h] > threshold,
                 "flows": flows[h],
@@ -204,19 +371,28 @@ def build_forecast(building_id: str) -> dict[str, Any]:
 def build_summary(building_id: str) -> dict[str, Any]:
     """The GET /api/dashboard/summary payload."""
     fixture = require_fixture(building_id)
-    grid, _ = predicted_load_kw(fixture)
+    curve = current_curve(fixture)
+    grid = curve.grid
     peak_kw = max(grid)
 
-    return {
+    payload = {
         "building_id": fixture.id,
         "building_type": fixture.building["type"],
         "building_name": fixture.name,
-        "timestamp": NOW_ISO,
+        "timestamp": curve.now_iso,
         "predicted_peak_kw": round1(peak_kw),
-        "predicted_peak_time": iso_hour(grid.index(peak_kw)),
-        "peak_threshold_kw": fixture.peak_threshold_kw,
+        "predicted_peak_time": curve.hours[grid.index(peak_kw)],
+        "peak_threshold_kw": curve.threshold_kw,
         "battery_capacity_kwh": fixture.building["battery_capacity_kwh"],
         "battery_max_kw": fixture.building["battery_max_kw"],
         "electricity_price_per_kwh": PRICE_PER_KWH[NOW_HOUR],
         **fixture.summary_extras,
     }
+
+    if curve.source != "fixtures":
+        # summary_extras pins current_load_kw to the *fixture's* curve at this
+        # hour. Once a model is driving the chart, that tile has to follow it
+        # or the headline number contradicts the line right beside it.
+        payload["current_load_kw"] = round1(grid[NOW_HOUR])
+
+    return payload
