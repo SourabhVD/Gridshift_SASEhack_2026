@@ -10,6 +10,8 @@
  *
  * Three rules from the motion study are baked in:
  *   - it never animates on first mount (the page already has a load stagger);
+ *   - it always reaches the target, even where requestAnimationFrame is
+ *     starved and no frame is ever painted;
  *   - it never animates under `prefers-reduced-motion: reduce`;
  *   - it snaps, rather than eases, whenever `snapKey` changes. That is how the
  *     scrubber is kept 1:1 -- pass the viewed hour as the snap key and dragging
@@ -89,12 +91,19 @@ export function useCountUp(value: number, options: UseCountUpOptions = {}): numb
     }
 
     const start = performance.now();
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      frameRef.current = null;
+      snap(value);
+    };
 
     const tick = (now: number) => {
       const t = Math.min(1, (now - start) / duration);
       if (t >= 1) {
-        frameRef.current = null;
-        snap(value);
+        finish();
         return;
       }
       // Track the frame we actually painted, so an interrupted run resumes
@@ -107,7 +116,18 @@ export function useCountUp(value: number, options: UseCountUpOptions = {}): numb
 
     frameRef.current = requestAnimationFrame(tick);
 
+    // requestAnimationFrame only fires when the compositor is painting. An
+    // occluded window, a throttled background tab and some mirrored displays
+    // all starve it while `document.visibilityState` still reads "visible",
+    // so there is nothing to feature-detect. Without a floor the animation
+    // simply never advances, and because the effect re-runs only when the
+    // value changes again, the number stays frozen wherever it started: the
+    // dashboard showed "0 kW optimized" against a 360 kW plan, indefinitely.
+    // Landing late on the right number beats easing to the wrong one.
+    const floor = setTimeout(finish, duration + 120);
+
     return () => {
+      clearTimeout(floor);
       if (frameRef.current !== null) {
         cancelAnimationFrame(frameRef.current);
         frameRef.current = null;
