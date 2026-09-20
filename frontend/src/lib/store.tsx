@@ -233,12 +233,34 @@ function summaryHour(summary: DashboardSummary | null): number {
  * active building: the plan wins in optimized mode, the forecast otherwise.
  * Pure, so both the active cursor and the portfolio sum can share it.
  */
+/**
+ * One site's flows at an hour, for the campus view.
+ *
+ * An APPROVED plan is not a proposal any more -- it is what that site will do
+ * -- so it counts whether or not the preview toggle is asking to see it.
+ * Without this, approving plans on three of four sites left the campus still
+ * announcing "4 of 4 sites exceed their cap today", because every campus
+ * number was read off the untouched forecast. An unapproved plan stays a
+ * proposal and only shows while the toggle asks for it.
+ *
+ * The single-site view has its own `flowsAt` and is deliberately not this: its
+ * Baseline/Optimized toggle is a before-and-after control and has to keep
+ * showing the before.
+ */
 function flowsOf(site: SiteState | undefined, hour: number, mode: ViewMode): EnergyFlows | null {
   if (!site) return null;
-  if (mode === 'optimized' && site.plan) {
-    return site.plan.impact[hour]?.optimized_flows ?? null;
+  const baseline = site.forecast?.points[hour]?.flows ?? null;
+  if (!site.plan) return baseline;
+  const committed = site.plan.status === 'approved';
+  if (committed || mode === 'optimized') {
+    return site.plan.impact[hour]?.optimized_flows ?? baseline;
   }
-  return site.forecast?.points[hour]?.flows ?? null;
+  return baseline;
+}
+
+/** True once this site's plan has been approved by a human. */
+export function isCommitted(site: SiteState | undefined): boolean {
+  return site?.plan?.status === 'approved';
 }
 
 /* -------------------------------------------------------------------------- */

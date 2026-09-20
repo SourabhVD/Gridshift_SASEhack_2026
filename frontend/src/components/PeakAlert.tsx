@@ -30,7 +30,7 @@ import { Loader2, RotateCcw } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { formatHour, formatHourIndex, formatKw } from '@/lib/format';
-import { useGridShift } from '@/lib/store';
+import { isCommitted, useGridShift } from '@/lib/store';
 
 export function PeakAlert() {
   const {
@@ -213,7 +213,7 @@ export function PeakAlert() {
  * a site on the viewer's behalf.
  */
 function PortfolioAlert() {
-  const { buildings, portfolioAt } = useGridShift();
+  const { buildings, portfolioAt, sites } = useGridShift();
 
   const worst = useMemo(() => {
     const offenders = new Set<string>();
@@ -236,8 +236,46 @@ function PortfolioAlert() {
       }
     }
 
-    return { offenders: [...offenders], hour, overKw, count };
-  }, [portfolioAt]);
+    // A site whose plan has been approved is running that plan; portfolioAt
+    // already reads its committed curve, so it drops out of `offenders` on
+    // its own. It is still worth naming, because "one site left" is only
+    // reassuring next to "three dealt with".
+    const resolved = buildings
+      .map((b) => b.id)
+      .filter((id) => isCommitted(sites[id]) && !offenders.has(id));
+
+    return { offenders: [...offenders], resolved, hour, overKw, count };
+  }, [portfolioAt, buildings, sites]);
+
+  const resolvedNames = worst.resolved
+    .map((id) => buildings.find((b) => b.id === id)?.name ?? id)
+    .join(' · ');
+
+  // Every site is running an approved plan and none of them crosses a cap.
+  if (worst.offenders.length === 0 && worst.resolved.length > 0) {
+    return (
+      <div
+        className={clsx(
+          'flex flex-col gap-4 border-y border-line-2 py-4',
+          'sm:flex-row sm:items-center sm:justify-between sm:gap-6',
+        )}
+      >
+        <div className="flex min-w-0 items-start gap-3.5">
+          <span
+            aria-hidden="true"
+            className="mt-1.5 h-[7px] w-[7px] shrink-0 rounded-full bg-good shadow-[0_0_0_4px_rgba(60,200,140,0.14)]"
+          />
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-ink">
+              <span className="tabular-nums text-good">{worst.resolved.length}</span>
+              {` of ${buildings.length} sites on approved plans · none over cap`}
+            </p>
+            <p className="mt-1 truncate text-xs text-muted">{resolvedNames}</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (worst.offenders.length === 0 || worst.hour < 0) return null;
 
@@ -260,7 +298,14 @@ function PortfolioAlert() {
         <div className="min-w-0">
           <p className="text-sm font-medium text-ink">
             <span className="tabular-nums text-alert">{worst.offenders.length}</span>
-            {` of ${buildings.length} sites exceed their cap today`}
+            {` of ${buildings.length} sites ${
+              worst.resolved.length > 0 ? 'still exceed' : 'exceed'
+            } their cap today`}
+            {worst.resolved.length > 0 && (
+              <span className="text-good">
+                {` · ${worst.resolved.length} on approved plans`}
+              </span>
+            )}
           </p>
           <p className="mt-1 truncate text-xs text-muted tabular-nums">
             {`Worst at ${formatHourIndex(worst.hour)} · ${worst.count} over at once · +${formatKw(

@@ -123,7 +123,7 @@ Built at SASEHack 2026.
 - **Sourabha Dharwad** ([@SourabhVD](https://github.com/SourabhVD)) — data pipeline, feature engineering, LightGBM forecaster
 - **Minh Thang Nguyen** — the OR-Tools optimization engine
 - [@wendyn06](https://github.com/wendyn06) — the initial FastAPI backend and schemas
-- [@vincent3DArt](https://github.com/vincent3DArt) — frontend, dashboard and 3D scene, agent integration
+- **Vinh Nguyen** ([@vincent3DArt](https://github.com/vincent3DArt)) — backend and API contract, Gemini agent, dashboard and 3D scene
 
 ---
 
