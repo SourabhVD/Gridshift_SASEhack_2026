@@ -232,6 +232,27 @@ const BATTERY_PRECHARGE_KW = round1(-OPTIMIZED_BATTERY[7]);
 const BATTERY_KWH = round1(
   OPTIMIZED_BATTERY.reduce((sum, kw) => sum + Math.max(kw, 0), 0),
 );
+/** "13:00". Hour 24 reads as midnight, which is where an evening block closes. */
+const clock = (h: number): string => `${String(h % 24).padStart(2, '0')}:00`;
+
+/**
+ * Where EV charging leaves and where it lands. Derived, because the solver
+ * decides both and a typed clock range goes stale the moment a constraint
+ * changes -- which is exactly what happened when the fleet deadline started
+ * being enforced and the evening block moved off midnight.
+ */
+const EV_OUT_HOURS = Object.keys(EV_DELTA_KW)
+  .map(Number)
+  .filter((h) => EV_DELTA_KW[h] < 0)
+  .sort((a, b) => a - b);
+const EV_IN_HOURS = Object.keys(EV_DELTA_KW)
+  .map(Number)
+  .filter((h) => EV_DELTA_KW[h] > 0)
+  .sort((a, b) => a - b);
+const EV_OUT_RANGE = `${clock(EV_OUT_HOURS[0])}-${clock(EV_OUT_HOURS[EV_OUT_HOURS.length - 1] + 1)}`;
+const EV_IN_RANGE = `${clock(EV_IN_HOURS[0])}-${clock(EV_IN_HOURS[EV_IN_HOURS.length - 1] + 1)}`;
+const DISCHARGE_RANGE = `${clock(DISCHARGE_START_HOUR)}-${clock(DISCHARGE_END_HOUR)}`;
+
 const MIN_SOC_PCT = Math.min(...OPTIMIZED_SOC);
 const END_SOC_PCT = OPTIMIZED_SOC[OPTIMIZED_SOC.length - 1];
 const RESERVE_FLOOR_PCT = 20;
@@ -256,6 +277,16 @@ const EV_PEAK_CUT_KW = round1(
 const HVAC_PEAK_CUT_KW = round1(
   BASELINE_HVAC[BASELINE_PEAK_HOUR] - OPTIMIZED_HVAC[BASELINE_PEAK_HOUR],
 );
+
+/**
+ * How many rows the plan actually has. A lever the optimizer left alone is
+ * dropped by makeFixture, so the narration must not say "three" when the
+ * reader can count two.
+ */
+const ACTION_COUNT = [BATTERY_PEAK_CUT_KW, EV_PEAK_CUT_KW, HVAC_PEAK_CUT_KW].filter(
+  (kw) => kw > 0,
+).length;
+const ACTION_COUNT_WORD = ['zero', 'one', 'two', 'three'][ACTION_COUNT] ?? String(ACTION_COUNT);
 
 /**
  * Where the day-ahead energy saving comes from. Each lever is priced against
@@ -292,7 +323,7 @@ export const PLAN_SUMMARY = [
   `${DISCHARGE_START_HOUR}:00 to ${BATTERY_PEAK_KW} kW at ${BATTERY_PEAK_HOUR}:00 and`,
   `tapering out after 18:00, for ${BATTERY_KWH} kWh out of the`,
   `${OFFICE_BUILDING.battery_capacity_kwh} kWh pack. The six EV bays back off through`,
-  'the late morning, sit idle from 13:00 to 19:00, and take the',
+  `the late morning, sit idle across ${EV_OUT_RANGE}, and take the`,
   `${EV_SHIFTED_KWH} kWh back between 19:00 and midnight, which is also when the pack`,
   'refills. HVAC never moves; the solver was offered the setpoint float and did',
   `not need it. The billing peak falls from ${BASELINE_PEAK_KW} kW to`,
@@ -311,7 +342,7 @@ function buildActions(runId: string): Action[] {
       id: 'act-battery-01',
       run_id: runId,
       type: 'battery_discharge',
-      title: `Discharge battery up to ${BATTERY_PEAK_KW} kW, 13:00-19:00`,
+      title: `Discharge battery up to ${BATTERY_PEAK_KW} kW, ${DISCHARGE_RANGE}`,
       description: `Dispatch ${BATTERY_KWH} kWh from the ${OFFICE_BUILDING.battery_capacity_kwh} kWh pack across six hours, starting at ${DISCHARGE_FIRST_KW} kW at ${DISCHARGE_START_HOUR}:00, deepening to ${BATTERY_PEAK_KW} kW at ${BATTERY_PEAK_HOUR}:00 and tapering to ${OPTIMIZED_BATTERY[18]} kW by 18:00. That is well inside the ${OFFICE_BUILDING.battery_max_kw} kW inverter. To pay for it the pack takes a ${BATTERY_PRECHARGE_KW} kW charge at 07:00 and refills from 20:00 to midnight, both at the $0.09/kWh off-peak rate, so SOC runs ${START_SOC_PCT}% up to 100%, down to ${MIN_SOC_PCT}% and back to ${END_SOC_PCT}% without ever touching the ${RESERVE_FLOOR_PCT}% reserve floor.`,
       start_time: isoHour(DISCHARGE_START_HOUR),
       end_time: isoHour(DISCHARGE_END_HOUR),
@@ -331,8 +362,8 @@ function buildActions(runId: string): Action[] {
       id: 'act-ev-02',
       run_id: runId,
       type: 'ev_charging_shift',
-      title: `Shift ${EV_SHIFTED_KWH} kWh of EV charging into 19:00-00:00`,
-      description: `Taper the six bays down from the ${6 * EV_CHARGER_KW} kW site allocation through the late morning, hold them at zero from 13:00 to 19:00, then bring them back at 19:00 and run at full allocation from 20:00 to midnight. Total energy delivered is unchanged, and every session still reaches 80% before its own deadline. This takes ${EV_PEAK_CUT_KW} kW straight out of the peak-setting hours, and because most of the shifted charging now lands after 20:00 it moves from the $0.16/kWh on-peak rate to $0.09/kWh.`,
+      title: `Move ${EV_SHIFTED_KWH} kWh of EV charging out of ${EV_OUT_RANGE} into ${EV_IN_RANGE}`,
+      description: `Taper the six bays down from the ${6 * EV_CHARGER_KW} kW site allocation through the late morning, hold them at zero across ${EV_OUT_RANGE}, then bring them back over ${EV_IN_RANGE}. Total energy delivered is unchanged, and every session still reaches 80% before its own deadline. This takes ${EV_PEAK_CUT_KW} kW straight out of the peak-setting hours, and because most of the shifted charging now lands after 20:00 it moves from the $0.16/kWh on-peak rate to $0.09/kWh.`,
       start_time: isoHour(19),
       end_time: MIDNIGHT,
       magnitude: 6 * EV_CHARGER_KW,
@@ -511,14 +542,14 @@ export const OFFICE_SCRIPT = scheduleScript([
   {
     type: 'decision',
     tool_name: 'save_action_plan',
-    message: `Committing a three-action plan: run the battery from 13:00 to 19:00, peaking at ${BATTERY_PEAK_KW} kW, move ${EV_SHIFTED_KWH} kWh of EV charging into the evening, and leave the HVAC setpoint alone.`,
+    message: `Committing a ${ACTION_COUNT_WORD}-action plan: run the battery across ${DISCHARGE_RANGE}, peaking at ${BATTERY_PEAK_KW} kW, move ${EV_SHIFTED_KWH} kWh of EV charging into ${EV_IN_RANGE}, and leave the HVAC setpoint alone.`,
     payload: { action_count: 3, plan_savings_usd: SAVINGS_USD },
     duration_ms: 150,
   },
   {
     type: 'tool_call',
     tool_name: 'request_human_approval',
-    message: `This takes the pack down to ${MIN_SOC_PCT}% and holds all six EV bays off from 13:00 to 19:00, so it needs a human. Sending all three actions to the facility manager for approval.`,
+    message: `This takes the pack down to ${MIN_SOC_PCT}% and holds all six EV bays off across ${EV_OUT_RANGE}, so it needs a human. Sending ${ACTION_COUNT_WORD === 'two' ? 'both' : 'all ' + ACTION_COUNT_WORD} actions to the facility manager for approval.`,
     payload: { requires_approval: true, action_count: 3 },
     duration_ms: null,
   },
