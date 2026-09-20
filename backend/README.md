@@ -5,9 +5,9 @@ It serves the nine endpoints in `frontend/src/lib/api.ts` against four demo
 buildings, runs a Gemini function-calling agent whose every tool call lands in
 the event stream, and works with no API key at all.
 
-This started life as `backend/reference/` and now *is* `backend/app/`. The data
-layer is still fixtures and the optimizer is still a heuristic — see
-[HANDOFF.md](HANDOFF.md) for what has to become real, and in what order.
+This started life as `backend/reference/` and now *is* `backend/app/`. The
+optimizer is a real CP-SAT model; the data layer is still fixtures — see
+[HANDOFF.md](HANDOFF.md) for what is left, and in what order.
 
 ```
 backend/
@@ -16,6 +16,7 @@ backend/
 ├── requirements.txt            what CI installs; the API itself needs only
 │                               fastapi, uvicorn, pydantic, dotenv, google-genai, pytest, httpx
 ├── .env.example                copy to backend/.env; every value has a working default
+├── Dockerfile                   one container, no Python setup needed
 ├── app/
 │   ├── main.py                 FastAPI app, CORS from env, /health, router
 │   ├── config.py               the one place the environment is read
@@ -36,12 +37,15 @@ backend/
 │   │   ├── residence.py        sea-residence-004 Alder Street Residence
 │   │   └── __init__.py         registry, slug/UUID resolution, assert_flows_identity
 │   └── services/
-│       ├── forecast.py         fixtures | ml, and the flow synthesis both share
-│       └── optimizer.py        the deterministic heuristic + the OR-Tools seam
+│       ├── forecast.py         fixtures | ml | backtest, and the shared flow synthesis
+│       ├── backtest.py         reads the ml harness's artifacts; stdlib only
+│       └── optimizer.py        the CP-SAT model and the heuristic it replaced
 └── tests/
     ├── conftest.py             TestClient + poll_until_complete
     ├── test_contract.py        endpoint shapes, all four buildings
-    ├── test_flows.py           the flow identity, published numbers, optimizer
+    ├── test_flows.py           the flow identity, published numbers, heuristic
+    ├── test_optimizer_cpsat.py the solver's properties and device limits
+    ├── test_backtest.py        the real-day forecast mode
     └── test_run_flow.py        run → events → plan → approve → reject → 409 → reset
 ```
 
@@ -66,10 +70,24 @@ uvicorn app.main:app --reload --port 8000
 Tests run from the **repository root**, which is exactly what CI does:
 
 ```bash
-python -m pytest                     # 54 backend tests, about 2 seconds
+python -m pytest                     # 100 backend tests, a few seconds
 ```
 
 `.venv/` is already covered by the repo's `.gitignore`.
+
+### Or in a container
+
+```bash
+docker build -t gridshift-backend backend
+docker run --rm -p 8000:8000 gridshift-backend
+```
+
+That is the whole demo with no Python setup: four buildings, the scripted
+agent, the CP-SAT optimizer. Pass the live agent's key at run time rather than
+baking it into an image, and mount backtest artifacts read-only if you want a
+real day — the header of `backend/Dockerfile` has both commands. It runs a
+single worker on purpose: runs are asyncio tasks in-process and the store is in
+memory, so a second worker would answer `/events` for a run it never saw.
 
 ### Environment
 
@@ -77,10 +95,15 @@ python -m pytest                     # 54 backend tests, about 2 seconds
 | --- | --- | --- |
 | `GRIDSHIFT_AGENT` | `fake` | `fake` replays the scripted run; `gemini` calls the model. `gemini` with no key logs a warning and degrades to `fake`. |
 | `GEMINI_API_KEY` | *(empty)* | Google AI Studio key. Read only by `app/agent/runner.py`; it never leaves the backend. |
-| `GEMINI_MODEL` | `gemini-2.5-flash` | Model id for `GRIDSHIFT_AGENT=gemini`. |
-| `GRIDSHIFT_FORECAST` | `fixtures` | `fixtures` serves the ported demo curves; `ml` calls the `ml` package and falls back to fixtures with a logged warning. |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Model id for `GRIDSHIFT_AGENT=gemini`. `gemini-2.5-flash` is documented as stable but the API returns 404 for keys created after its retirement. |
+| `GRIDSHIFT_FORECAST` | `fixtures` | `fixtures` serves the ported demo curves; `ml` calls the `ml` package in process; `backtest` serves a real day from disk. Anything unavailable falls back to fixtures with one logged warning. |
 | `GRIDSHIFT_ML_MODEL_PATH` | `ml/artifacts/load_forecaster.joblib` | Trained bundle. Relative paths resolve from the repo root. |
+| `GRIDSHIFT_BACKTEST_PATH` | `data/processed/backtests` | Where `ml/evaluate_forecast_date.py` writes its per-date directories. |
+| `GRIDSHIFT_BACKTEST_DATE` | *(empty)* | Which day to serve. Empty means the most recent one present. |
+| `GRIDSHIFT_BACKTEST_BUILDING` | `sea-office-001` | The one site the backtest speaks for; every other slug keeps its fixture curve. |
+| `GRIDSHIFT_OPTIMIZER` | `ortools` | `ortools` runs the CP-SAT model; `heuristic` runs the fixed-order three-lever pass the published figures came from. |
 | `CORS_ORIGINS` | `http://localhost:3000` | Comma-separated browser origins allowed to call the API. |
+| `GRIDSHIFT_AGENT_THINKING` | `0` | Gemini's internal thinking budget in tokens. `0` is off and several times faster; the prompt already names every tool and its order. `-1` lets the model decide. |
 | `GRIDSHIFT_AGENT_SPEED` | `1.0` | Multiplies every simulated agent delay. `0` finishes a run instantly — the test suite sets this. |
 
 ---
@@ -254,6 +277,123 @@ Two things to fix when you take this over:
 
 ---
 
+## Serving a real day: `GRIDSHIFT_FORECAST=backtest`
+
+`ml/evaluate_forecast_date.py` is a **backtest harness, not a live
+forecaster**, and it is worth being precise about that before anyone wires it
+into a route. Two things in it decide the shape of this integration:
+
+* It refuses a date unless the database already holds 24 hours of **measured**
+  load for it. It can only forecast days you already know the answer to, which
+  is exactly right for evaluating a model and is not a next-day prediction.
+* It retrains from scratch on every call — a feature ablation that fits a model
+  per feature group, then a final fit. That does not belong inside an HTTP
+  request.
+
+So the backend never calls it. You run it once, offline, and this mode reads
+what it left behind:
+
+```bash
+# from the repository root, with DATABASE_URL in ./.env
+python -m ml.evaluate_forecast_date --date 2018-07-15
+# writes data/processed/backtests/2018-07-15/
+```
+
+```bash
+cd backend
+GRIDSHIFT_FORECAST=backtest uvicorn app.main:app --reload --port 8000
+```
+
+`GET /health` then carries a `backtest` block naming the directory, the dates
+it found and the site they are served as — the fallback to fixtures is silent
+by design, so that block is how you check the mode actually took.
+
+### What is real, and what is not
+
+Be precise about this, especially on a slide.
+
+**Real:** the shape of the day, and the gap between predicted and measured.
+`predicted_load_kw` is a real model's output for a real date, and
+`actual_load_kw` is what the building actually drew — both straight out of the
+harness, not synthesised.
+
+**Presentational:** the absolute kW and the calendar date. Both series are
+multiplied by one factor that maps the day's peak onto this site's own peak,
+and they are published on the demo day. `GET /health` reports the real kW and
+the factor applied, so this is not hidden:
+
+```json
+"serving": { "date": "2018-07-15", "algorithm": "LightGBM",
+             "real_peak_kw": 73.4, "real_measured_peak_kw": 76.9,
+             "scaled_onto_site_by": 7.1117 }
+```
+
+Because both series are scaled by the same number, the model's relative error
+is untouched: the visible gap between the two lines is the real one.
+
+**Why not publish the raw kW?** Coherence. The optimizer's levers, the device
+facts `validate_schedule` checks them against, and the agent's scripted
+narration are all authored at the site's scale and on the demo day. Serving 73
+kW on `/forecast` put a 73 kW chart beside a 522 kW impact chart on two
+different dates, and made `get_energy_forecast` compare a 73 kW day against a
+450 kW billing threshold and report zero peak hours. Making the raw scale work
+end to end means scaling the policy deltas, the device facts and the authored
+prose too — worth doing when the optimizer stops being a heuristic, not before.
+
+`actual_load_kw` stops at "now", the way `metered_actuals` does. The file knows
+the whole day; publishing the future half would move the dashboard's time
+cursor and claim a measurement that has not happened.
+
+Three things this mode deliberately does **not** do:
+
+* **No database access, ever.** `app/services/backtest.py` reads a CSV and two
+  JSON files using only the standard library. No credential reaches the
+  backend, and the mode works on an install with neither pandas nor
+  scikit-learn. It also needs no timezone database, which Python does not ship
+  on Windows: the day's offset is derived by subtracting the first row's UTC
+  instant from the directory's date.
+* **It speaks for one site.** The database holds a single building, so only
+  `GRIDSHIFT_BACKTEST_BUILDING` is served from it. Every other slug keeps its
+  fixture curve unchanged.
+* **It does not invent flows.** The model predicts total load, so the component
+  split is still synthesised through `flows_for_grid()`. The per-device numbers
+  are the optimizer's output, not the forecaster's.
+
+### Operating it
+
+**The artifacts are per machine.** `data/processed/` is gitignored, so a
+backtest folder never travels with a clone, a branch or a container image.
+Whoever runs the demo either runs the harness themselves with `DATABASE_URL`
+set, or copies the folder across by hand. Plan for that before the day.
+
+**A verified day is `2018-08-09`**, the highest-peak weekday in the data and
+the one this mode has actually been run against:
+
+| | |
+| --- | ---: |
+| Measured peak | 160.0 kW |
+| Model peak | 149.9 kW |
+| Mean absolute error | 3.36 kW |
+| MAPE | 3.5 % |
+| R² | 0.987 |
+| Peak-hour F1 | 1.00 (6 of 6) |
+
+Serve it and `/health` reports the real kW beside the factor applied. Say the
+peak-hour figure carefully: the model identified every hour that crossed the
+threshold, and its single highest hour lands two hours late. For peak shaving
+that gap matters less than it sounds, because the action window is the whole
+exceedance rather than one interval — but do not round it away on a slide.
+
+**Known limitation, on two days a year:** the harness selects a window of
+`local_start + Timedelta(days=1)`, which is 24 hours of elapsed time rather
+than a calendar day. On a daylight-saving transition that window is not quite
+the local day, and the `utc_offset` reported in `/health` is the one in force
+at midnight rather than for the whole day. Neither affects the served curve,
+which is published on the demo day in file order, but pick a different date if
+you want the reported metadata to be exact.
+
+---
+
 ## The flow identity
 
 ```
@@ -307,14 +447,81 @@ derivation, and `test_heuristic_path_without_a_pinned_policy` runs that path for
 all four. The optimized curve is always re-derived from the components through
 the identity, so an action's stated kW really is what moves the line.
 
-The heuristic never backtracks, so it cannot trade one lever against another —
-it will not discharge the battery harder to buy the HVAC action a shorter
-drift. `solve_with_ortools()` is the stub where a CP-SAT model belongs (one
-integer variable per resource-hour in watts, the identity as a linear
-constraint, lexicographic `minimize(peak, then cost)`), returning the same
-`OptimizationResult` so nothing downstream changes. It raises
-`NotImplementedError` today, and the `TODO: replace with OR-Tools` in the module
-docstring marks the seam.
+The heuristic never backtracks, which is its ceiling: it cannot discharge the
+battery harder to buy the HVAC action a shorter drift, because by the time it
+reaches the battery the HVAC decision is already made.
+
+### The CP-SAT model — the default
+
+`solve_with_ortools()` closes that gap. One integer variable per resource-hour
+in tenths of a kW, the flow identity as a linear constraint each hour, and a
+lexicographic objective solved in two passes: minimise the peak, then pin that
+peak and minimise cost underneath it. Two solves rather than one weighted
+objective, so "minimise cost" cannot quietly buy a worse peak by being large
+enough. `solve()` picks between the two on `GRIDSHIFT_OPTIMIZER`, and the agent
+calls `solve()`.
+
+Holding all three levers at once is what buys the improvement:
+
+| Site | Heuristic cut | CP-SAT cut | Demand charge avoided |
+| --- | ---: | ---: | --- |
+| `sea-office-001` | 84.0 kW | 149.7 kW | $714 → $1,272 /mo |
+| `sea-hospital-002` | 92.0 kW | 126.2 kW | $782 → $1,073 /mo |
+| `sea-warehouse-003` | 115.0 kW | 193.6 kW | $978 → $1,646 /mo |
+| `sea-residence-004` | 9.3 kW | 8.8 kW | $79 → $75 /mo |
+
+All four solve to `OPTIMAL` in well under 100 ms.
+
+The residence is the one site where the heuristic posts a deeper cut, and the
+reason is worth knowing: **the solver holds the battery to end-of-day energy
+neutrality and the heuristic does not.** Without that constraint the solver
+discovered that discharging lowers both the peak and the bill, drained to the
+reserve floor and never bought the energy back — a saving that existed only
+because the model let it spend stored charge for free. The heuristic still has
+that freedom. Comparing the two on peak alone therefore flatters it.
+
+**There is no fallback behind it, on purpose.** Every constraint admits the
+untouched baseline and the baseline is fed in as a solution hint, so "no
+solution" is not a state this model can reach, and the solver can never return
+something worse than leaving the building alone. A fallback would only hide a
+formulation bug that ought to be loud. `test_optimizer_cpsat.py` pins that
+property along with the flow identity, energy conservation, the device limits
+and reproducibility.
+
+The objective runs in three passes rather than one weighted sum, so no later
+term can quietly buy back an earlier one: minimise the peak, pin it and
+minimise cost, then pin that and minimise how far the battery moves. That last
+pass exists because off-peak energy is a flat price here, so cycling the pack
+at 01:00 costs the model nothing and it will do it — producing a dispatch
+smeared over ten hours including one at midnight. Real cycling wears the pack,
+and this is the cheapest way to say so without inventing a degradation cost.
+
+Four modelling decisions worth knowing before you change it:
+
+* **Tenths of a kW, not watts.** Every value the solver returns is already on
+  the 0.1 kW grid the wire format uses, so the flow identity stays exact after
+  conversion with no float residue to round away.
+* **The grid floor is the site's own export, not zero.** A site with enough PV
+  exports at midday — the residence baseline runs to −4 kW — so a zero floor
+  would exclude its own curve and make the model infeasible for that building
+  alone. Pinning the floor at the baseline's export also stops the solver
+  inventing new export: dumping the pack into the grid for an energy credit
+  prices badly under this tariff and is not a schedule anyone would approve.
+* **The SOC floor carries half a percent of margin.** The solver will sit
+  exactly on any floor it is given, because energy held back is peak not
+  shaved. Downstream, `validate_schedule` re-walks the state of charge in
+  percent and rounds every hour, so an exact landing here reads as a fraction
+  below the floor there and the agent rejects its own plan.
+
+* **Charging is inside the grid curve, so it is never billed twice.** The
+  heuristic's recharge happens after the modelled day, so `_assemble` adds it
+  to the bill separately. The solver charges within the day, where a negative
+  battery hour already raises `grid_kw` and is already paid for at that hour's
+  price. Passing the charged kWh to `_assemble` as well made the optimized day
+  cost *more* than doing nothing.
+
+Fixed seed, single worker: the same building produces the same plan every run,
+because a demo whose numbers move between takes is worse than a slower one.
 
 ---
 

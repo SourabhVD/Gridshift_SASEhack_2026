@@ -7,11 +7,12 @@ nine endpoints, four demo buildings, an agent that streams its reasoning as
 events, and an action plan a human approves or rejects. It runs with **no API
 key and no database** — `GRIDSHIFT_AGENT=fake` replays a scripted 14-step run
 that calls the real tool functions, so the whole pipeline is exercised offline.
-The forecast curves, the optimizer and the store are deliberately simple.
-Your job is to make those three real without changing the wire format: swap
-SQLite for Postgres, the heuristic for OR-Tools, the fixture curves for the
-trained model, and add authentication. `README.md` next to this file explains
-how each piece works; this file is the hour-one path.
+
+The optimizer is a real CP-SAT model. What is still simple is the data layer
+and the store: swap the fixture curves for the trained model (section 4), swap
+SQLite for Postgres, and add authentication — none of which changes the wire
+format. `README.md` next to this file explains how each piece works; this file
+is the hour-one path.
 
 ## 2. Run it in 5 minutes
 
@@ -65,15 +66,32 @@ once `partial` is silent.
 
 ## 3. Turn on the real agent
 
-1. Create a key at <https://aistudio.google.com/app/apikey>.
-2. `cp .env.example .env` in `backend/`, then set:
+Until someone does this, the live path has never executed. `fake` is the
+default, it replays a scripted fourteen-step run through the real tool
+functions, and that is why the suite is green without a key. Finding out on
+stage is the wrong time.
+
+**Step by step:**
+
+1. Go to <https://aistudio.google.com/app/apikey>, sign in with a Google
+   account, and click **Create API key**. A personal account is fine and the
+   free tier is enough for a demo. Copy the key once; the page will not show it
+   again.
+2. In `backend/`, run `cp .env.example .env`. That file is gitignored — check
+   `git status` shows nothing new before you paste anything into it.
+3. Open `backend/.env` and set exactly two lines:
    ```
-   GEMINI_API_KEY=your-key-here
+   GEMINI_API_KEY=paste-your-key-here
    GRIDSHIFT_AGENT=gemini
    ```
-   `.env` is gitignored. The key is read only in `app/agent/runner.py` and
-   never reaches the browser.
-3. Restart uvicorn, click "Run agent", and check two things in the feed:
+   No quotes, no spaces around the `=`. The key is read only in
+   `app/agent/runner.py` and never reaches the browser.
+4. Restart uvicorn. **Check `GET /health` first**: it must report
+   `"agent": "gemini"` and `"gemini_key_present": true`. If it says `fake`, the
+   key was not picked up — a missing key degrades to fake mode with a logged
+   warning rather than failing, so this is the one place that tells you.
+5. Click "Run agent" and read the feed. Two things must hold, and a third is
+   worth watching:
    * **Every `tool_call` has a matching `tool_result`** with a payload and a
      `duration_ms`. That pairing is written by `ToolInvoker.invoke` in
      `app/agent/runner.py` and is the one thing you must not break —
@@ -83,11 +101,66 @@ once `partial` is silent.
      orchestrates; it never computes a schedule. Every kW and dollar comes from
      `run_schedule_optimizer`. If the prose invents a figure, tighten the system
      prompt — do not let a tool accept model-supplied numbers.
+   * **The run still ends in a plan you can approve.** A live model may call
+     the tools in a different order or skip one; the run is only complete when
+     `save_action_plan` has fired. If `/plan` still 404s after the feed stops,
+     read the last event — a `type: "error"` names what went wrong.
 
 With `GRIDSHIFT_AGENT=gemini` and no key the backend logs a warning and runs
 fake mode, so a missing key never breaks a demo.
 
+**Two rules about the key itself.** Never commit it and never paste it into
+chat — a key in a message history is a key you have to rotate. If one leaks,
+delete it in AI Studio and make a new one; that revokes it immediately. For a
+container, pass it at run time with `-e GEMINI_API_KEY=...` rather than baking
+it into an image.
+
+**Keep fake mode as the fallback.** If the live run misbehaves ten minutes
+before you present, set `GRIDSHIFT_AGENT=fake` and restart. The dashboard
+cannot tell the difference, and the plan it produces is the same one the
+optimizer computed.
+
 ## 4. Make the forecast real
+
+Two routes. Prefer the first.
+
+### 4a. A real day from the database: `GRIDSHIFT_FORECAST=backtest`
+
+`ml/evaluate_forecast_date.py` is a backtest harness, not a live forecaster: it
+refuses a date the database holds no measured load for, and it retrains from
+scratch on every call. Neither belongs inside a request, so run it once and let
+the backend read what it left behind.
+
+```bash
+# repository root, DATABASE_URL in ./.env
+python -m ml.evaluate_forecast_date --date 2018-07-15
+```
+
+```bash
+cd backend
+GRIDSHIFT_FORECAST=backtest uvicorn app.main:app --reload --port 8000
+```
+
+The office then serves that day's real predictions against its real metered
+load. `GET /health` grows a `backtest` block naming the dates it found and what
+it is serving — the fallback to fixtures is silent, so look there first if the
+curves still look like the demo.
+
+**What is real:** the shape of the day and the gap between predicted and
+measured. **What is presentational:** the absolute kW and the date. Both series
+are multiplied by one factor onto this site's own peak and published on the
+demo day, because the optimizer's levers, the device facts and the agent's
+narration are all authored at that scale. `/health` reports the real kW and the
+factor, so nothing is concealed. README.md explains why, and what it would take
+to publish raw kW end to end.
+
+`app/services/backtest.py` reads one CSV and two JSON files using the standard
+library alone. **No credential reaches the backend and no query runs in the
+request path.** The database holds one building, so the other three sites keep
+their fixture curves. Flows are still synthesised: the model predicts total
+load only.
+
+### 4b. The model in process: `GRIDSHIFT_FORECAST=ml`
 
 ```
 GRIDSHIFT_FORECAST=ml
@@ -209,11 +282,13 @@ In order:
    load only, no device tables), so the four demo sites stay fixtures until
    there is more data — and flows stay synthesised.
 
-3. **OR-Tools.** Replace `optimize()` with a CP-SAT model — one integer
-   variable per resource-hour in watts, the flow identity as a linear
-   constraint, lexicographic `minimize(peak, then cost)` — and return the same
-   `OptimizationResult`. `solve_with_ortools()` is the stub. Nothing downstream
-   changes.
+3. ~~**OR-Tools.**~~ **Done.** `solve_with_ortools()` is a real CP-SAT model
+   and the default; `solve()` picks it or the heuristic on
+   `GRIDSHIFT_OPTIMIZER`. It roughly doubles the demand charge avoided on three
+   of the four sites. What is still owed: the levers are the same three, so a
+   site with a fourth flexible load needs a new variable family, and the model
+   assumes the tariff shape in `generator.py` rather than reading
+   `tariff_rates`. README.md has the modelling decisions.
 
 4. **Auth and CORS.** Nothing is authenticated today; `approve` will accept
    anybody. Add an authenticated identity, a per-building authorisation check,

@@ -112,6 +112,11 @@ function HeadlineStrip({
           </span>
         }
       />
+      {/* The energy line is allowed to go the wrong way, and on a real
+          metered day it does: if the peak sits in the off-peak window, the
+          only way out of it is into the expensive hours. That is a trade the
+          demand charge pays for many times over, but it has to be shown as a
+          rise rather than as "−$-13.34" of savings in green. */}
       <Stat
         label="Daily energy cost"
         value={[
@@ -120,9 +125,14 @@ function HeadlineStrip({
           formatUsd(plan.optimized_cost_usd),
         ].join(' ')}
         foot={
-          <span className="text-xs font-medium text-good tabular-nums">
-            {MINUS}
-            {formatUsd(plan.savings_usd)}
+          <span
+            className={clsx(
+              'text-xs font-medium tabular-nums',
+              plan.savings_usd >= 0 ? 'text-good' : 'text-peak',
+            )}
+          >
+            {plan.savings_usd >= 0 ? MINUS : '+'}
+            {formatUsd(Math.abs(plan.savings_usd))}
           </span>
         }
       />

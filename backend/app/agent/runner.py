@@ -57,6 +57,30 @@ log = logging.getLogger("gridshift.agent")
 #: Hard stop on the Gemini loop so a confused model cannot bill forever.
 MAX_MODEL_TURNS = 16
 
+#: Attempts per model turn, and the first backoff. Doubles each time. The free
+#: tier's 503s clear almost immediately, so the first retry is quick and the
+#: doubling is there for a real outage rather than a spike.
+MODEL_RETRIES = 5
+MODEL_RETRY_BASE_S = 0.5
+
+#: HTTP statuses worth another attempt: 503 is the free tier's "experiencing
+#: high demand", 429 is rate limiting, 500 and 504 are Google's own faults.
+#: 403 and 404 are not here on purpose -- a wrong key, an unenabled project or
+#: a retired model id will never fix itself, and retrying only delays the
+#: message someone has to read.
+RETRYABLE_STATUS = (429, 500, 503, 504)
+
+
+def _is_transient(exc: Exception) -> bool:
+    """True for a failure that another attempt might get past."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        return code in RETRYABLE_STATUS
+    text = str(exc)
+    return any(str(status) in text for status in RETRYABLE_STATUS) and (
+        "UNAVAILABLE" in text or "RESOURCE_EXHAUSTED" in text or "INTERNAL" in text
+    )
+
 SYSTEM_PROMPT = """\
 You are GridShift, an energy operations agent for commercial and residential \
 buildings. A run starts because today's load forecast tripped a peak-risk \
@@ -64,7 +88,7 @@ flag. Your job is to find out whether the peak is real, work out which loads \
 are genuinely flexible, have the optimizer compute a dispatch schedule, check \
 it, and route it to a human.
 
-Investigate in this order, one tool call at a time:
+Investigate in this order:
 
   1. get_energy_forecast     confirm the peak and how long it lasts
   2. get_electricity_prices  learn whether kW or kWh is the thing to minimise
@@ -76,6 +100,12 @@ Investigate in this order, one tool call at a time:
   7. validate_schedule       confirm zero violations
   8. save_action_plan        persist it
   9. request_human_approval  hand it to the operator, and stop
+
+Steps 1 to 5 are independent reads: none of them needs another's answer, so \
+request all five together in your first turn rather than one at a time. An \
+operator is watching this run happen, and five round trips where one would do \
+is four spent waiting. Steps 6 to 9 each depend on the step before it, so take \
+those one at a time.
 
 Rules you do not break:
 
@@ -238,9 +268,9 @@ async def run_fake(invoker: ToolInvoker) -> None:
     deterministic, so both produce the same schedule.
     """
     ctx = invoker.ctx
-    from ..services.optimizer import optimize  # local import keeps the module graph flat
+    from ..services.optimizer import solve  # local import keeps the module graph flat
 
-    script = ctx.fixture.build_script(optimize(ctx.fixture))
+    script = ctx.fixture.build_script(solve(ctx.fixture))
 
     for step in script:
         await _sleep(step.delay_ms)
@@ -302,20 +332,59 @@ async def run_gemini(invoker: ToolInvoker) -> None:
         tools=[tool_config],
         automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         temperature=0.2,
+        # Internal thinking is the single largest cost in this loop and buys
+        # nothing here: the prompt already names the nine tools, their order
+        # and the rules, so there is no plan for the model to work out. On one
+        # measured call it was 3.29 s with thinking left at its default and
+        # 0.63 s with it off, for the same answer. Multiply by a turn per step
+        # and it is most of the wait an operator sits through.
+        # GRIDSHIFT_AGENT_THINKING raises it again if a harder task ever needs
+        # it; the reasoning the operator reads is output text, not this.
+        thinking_config=types.ThinkingConfig(thinking_budget=settings.agent_thinking_budget),
     )
 
     contents: list[Any] = [
         types.Content(role="user", parts=[types.Part(text=_user_prompt(invoker.ctx.fixture))])
     ]
 
+    async def generate() -> Any:
+        """
+        One model turn, retried through a transient refusal.
+
+        The free tier answers 503 "experiencing high demand" often enough to
+        lose whole runs: observed failing at turn 1 and again at turn 3 of the
+        same demo, minutes apart. Unretried, a spike on Google's side ends the
+        run, the feed stops mid-thought and /plan keeps 404ing -- all correct
+        behaviour, none of it something to discover on stage.
+        """
+        last: Exception | None = None
+        for attempt in range(MODEL_RETRIES):
+            try:
+                return await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=settings.gemini_model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:  # noqa: BLE001 - re-raised unless retryable
+                if not _is_transient(exc):
+                    raise
+                last = exc
+                delay = MODEL_RETRY_BASE_S * (2**attempt)
+                log.warning(
+                    "model call failed (%s), retrying in %.0fs [%d/%d]",
+                    type(exc).__name__,
+                    delay,
+                    attempt + 1,
+                    MODEL_RETRIES,
+                )
+                await asyncio.sleep(delay)
+        assert last is not None  # the loop only exits here after a failure
+        raise last
+
     approved = False
     for turn in range(MAX_MODEL_TURNS):
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=settings.gemini_model,
-            contents=contents,
-            config=config,
-        )
+        response = await generate()
 
         candidate = (response.candidates or [None])[0]
         parts = list(getattr(getattr(candidate, "content", None), "parts", None) or [])

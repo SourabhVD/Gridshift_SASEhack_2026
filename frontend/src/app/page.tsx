@@ -53,8 +53,8 @@ import { PeakAlert } from '@/components/PeakAlert';
 import { SelectionProvider } from '@/components/scene/interaction/selection';
 import { TimelinePanel } from '@/components/TimelinePanel';
 import { ChapterTour } from '@/components/tour/ChapterTour';
-import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { DataSourceBadge } from '@/components/ui/DataSourceBadge';
 import { useGridShift } from '@/lib/store';
 import { useColdOpen } from '@/lib/useColdOpen';
 
@@ -65,7 +65,7 @@ let hasPlayedEntrance = false;
 const ENTRANCE_MS = 900;
 
 export default function Page() {
-  const { forecast, sites, level, isMock, isLoading, runStatus, reset } = useGridShift();
+  const { forecast, sites, level, isLoading, runStatus, reset } = useGridShift();
 
   /* At portfolio level the alert row is about the campus, so it appears if ANY
      site crosses its own cap -- not only the one the dashboards below are
@@ -115,7 +115,7 @@ export default function Page() {
           <BuildingSelector />
 
           <div className="ml-auto flex items-center gap-3">
-            {isMock && <Badge tone="warn">Mock data</Badge>}
+            <DataSourceBadge />
             <Button
               variant="secondary"
               size="sm"

@@ -46,6 +46,23 @@ export const TZ_OFFSET = '-07:00';
 export const HOURS = 24;
 
 /** ISO 8601 timestamp for the start of hour `h` on the demo day. */
+/**
+ * Inclusive start and exclusive end hour spanned by a lever's activity.
+ *
+ * A lever the optimizer left alone returns [0, 0], which collapses to a
+ * zero-length window and is how `makeFixture` knows to drop its action row.
+ * Mirrors `action_window` in the backend's fixtures/generator.py, so the two
+ * agree on how many actions a plan has.
+ */
+export function actionWindow(delta: Record<number, number>): [number, number] {
+  const active = Object.keys(delta)
+    .map(Number)
+    .filter((h) => Math.abs(delta[h] ?? 0) > 1e-9)
+    .sort((a, b) => a - b);
+  if (active.length === 0) return [0, 0];
+  return [active[0], Math.min(active[active.length - 1] + 1, HOURS)];
+}
+
 export function isoHour(h: number): string {
   return DEMO_DATE + 'T' + String(h).padStart(2, '0') + ':00:00' + TZ_OFFSET;
 }
@@ -442,7 +459,12 @@ export function makeFixture(spec: FixtureSpec): BuildingFixture {
       baseline_cost_usd: baselineCostUsd,
       optimized_cost_usd: optimizedCostUsd,
       savings_usd: savingsUsd,
-      actions: spec.buildActions(runId),
+      // A lever the optimizer left alone gets no row. Its window collapses to
+      // zero length, which the contract forbids (end_time must be after
+      // start_time) and which would render as an action a human is asked to
+      // approve when nothing actually happens. The backend drops these in
+      // build_plan for the same reason, so the two agree on the count.
+      actions: spec.buildActions(runId).filter((a) => a.end_time > a.start_time),
       impact: buildImpact(),
     };
   }

@@ -28,7 +28,7 @@ from ..fixtures.generator import HOURS, NOW_ISO, iso_hour, round1, round2
 from ..models.schemas import TOOL_NAMES
 from ..store import store
 from ..services import forecast as forecast_service
-from ..services.optimizer import OptimizationResult, optimize
+from ..services.optimizer import OptimizationResult, solve
 
 log = logging.getLogger("gridshift.tools")
 
@@ -122,7 +122,7 @@ def run_schedule_optimizer(
     Compute the dispatch schedule. The model chooses *when* to call this and
     with which resources; the kW come out of services/optimizer.py.
     """
-    result = optimize(ctx.fixture)
+    result = solve(ctx.fixture)
     ctx.result = result
 
     return {
@@ -215,8 +215,17 @@ def build_plan(ctx: ToolContext) -> dict[str, Any]:
     r = ctx.require_result("save_action_plan")
     fixture = ctx.fixture
 
+    # A lever the optimizer left alone gets no row. Its window collapses to
+    # zero length, which the contract forbids -- end_time must be after
+    # start_time -- and which the dashboard would render as an action a human
+    # is asked to approve when nothing actually happens. Dropping it is also
+    # the rule the agent itself works to: a two-action plan that is true beats
+    # a three-action plan that is not. Sites where every lever moves are
+    # unaffected.
+    drafts = [d for d in fixture.build_actions(r) if d["end_time"] > d["start_time"]]
+
     actions: list[dict[str, Any]] = []
-    for index, draft in enumerate(fixture.build_actions(r), start=1):
+    for index, draft in enumerate(drafts, start=1):
         action = dict(draft)
         action["id"] = f"{ctx.run_id}-act-{index:02d}"
         action["run_id"] = ctx.run_id
