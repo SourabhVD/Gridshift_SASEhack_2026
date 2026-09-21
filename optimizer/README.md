@@ -7,6 +7,40 @@ minimize  energy cost + demand charge + violation penalties
 s.t.      battery SOC dynamics, EV energy windows, HVAC comfort limits
 ```
 
+## Setup (one time, per database)
+
+Your app's `gridshift_backend` role has DML rights (SELECT/INSERT/UPDATE/DELETE)
+on existing tables but **not** `CREATE` — so the four new tables this component
+needs have to be created by someone with dashboard access, through Supabase's
+**SQL Editor** (Project → SQL Editor → New query), not through Python:
+
+1. Paste and run `optimizer/db/devices.sql` in the SQL Editor.
+   (`python -m optimizer.db.apply_devices_schema` will NOT work here —
+   same role, same missing `CREATE` privilege.)
+2. Supabase auto-enables Row-Level Security on every new `public` table. With
+   no policy defined, that silently blocks all writes — including from your
+   own backend role — with `new row violates row-level security policy`. Run
+   this in the same SQL Editor (also included at the bottom of `devices.sql`):
+   ```sql
+   ALTER TABLE public.battery_assets DISABLE ROW LEVEL SECURITY;
+   ALTER TABLE public.ev_charging_sessions DISABLE ROW LEVEL SECURITY;
+   ALTER TABLE public.hvac_flexibility DISABLE ROW LEVEL SECURITY;
+   ALTER TABLE public.optimization_plans DISABLE ROW LEVEL SECURITY;
+   ```
+3. Verify both landed:
+   ```sql
+   SELECT tablename, rowsecurity FROM pg_tables
+   WHERE schemaname = 'public'
+     AND tablename IN ('battery_assets','ev_charging_sessions',
+                        'hvac_flexibility','optimization_plans');
+   ```
+   All four should show `rowsecurity = false`.
+
+If you don't have Supabase dashboard access, GitHub repo access does **not**
+grant it — they're separate systems. Ask the project owner to invite you from
+**Project Settings → Team** (not Authentication → Users, which creates an app
+login, not a dashboard login).
+
 ## Run
 
 ```bash
@@ -15,15 +49,20 @@ pip install -r optimizer/requirements.txt
 # offline (no database) — works on the Component 2 forecast CSV
 python -m optimizer.run_optimizer --forecast-csv ml/evaluation/demo_forecast_24h.csv
 
-# database
-psql "$DATABASE_URL" -f optimizer/db/devices.sql
-python -m optimizer.seed_devices --building-id <uuid>
+# database — after Setup above
+python -m optimizer.db.introspect                          # sanity-check what's in the DB
+python -m optimizer.seed_devices --building-id <uuid>       # one-time synthetic battery/EV/HVAC
 python -m optimizer.run_optimizer --building-id <uuid> --hours 24
 python -m optimizer.run_optimizer --building-id <uuid> --hours 168 --pricing tou
-python -m optimizer.run_optimizer --building-id <uuid> --write-plan
+python -m optimizer.run_optimizer --building-id <uuid> --write-plan   # persist to optimization_plans
 
 pytest tests/optimizer
 ```
+
+`seed_devices` is idempotent (deletes its own prior synthetic rows before
+re-inserting), so safe to re-run after tweaking sizing assumptions.
+`optimize.db.apply_devices_schema` exists for databases where `gridshift_backend`
+*does* have `CREATE` — most Supabase setups won't, hence the manual step above.
 
 ## Layout
 

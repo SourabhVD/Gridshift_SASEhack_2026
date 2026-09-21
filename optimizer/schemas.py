@@ -179,6 +179,10 @@ class OptimizationResult:
     savings: dict[str, float]
     violations: dict[str, float]
     solver: dict[str, float | str]
+    # Per-device summaries, keyed "battery" / "hvac" / "ev:<session name>" /
+    # "other_electrical". CSV/console only — not persisted to the DB (the
+    # optimization_plans table stays aggregate-only by design).
+    device_plans: dict[str, dict] = field(default_factory=dict)
 
     def summary(self) -> str:
         cut = self.baseline_peak_kw - self.optimized_peak_kw
@@ -189,3 +193,53 @@ class OptimizationResult:
             f"saves ${self.savings['total']:.2f} "
             f"(energy ${self.savings['energy']:.2f}, demand ${self.savings['demand']:.2f})"
         )
+
+    def format_plan(self) -> str:
+        """Human-readable per-device breakdown: battery, each EV, HVAC, other."""
+        lines: list[str] = []
+
+        battery = self.device_plans.get("battery")
+        if battery:
+            lines.append(
+                f"BATTERY  {battery['name']}  {battery['capacity_kwh']:.1f} kWh\n"
+                f"  charged {battery['energy_charged_kwh']:.1f} kWh | "
+                f"discharged {battery['energy_discharged_kwh']:.1f} kWh | "
+                f"SOC {battery['soc_start_pct']:.0f}% -> {battery['soc_end_pct']:.0f}% | "
+                f"active {battery['active_hours']}/{battery['horizon_hours']} h"
+            )
+        else:
+            lines.append("BATTERY  none configured")
+
+        ev_plans = {k: v for k, v in self.device_plans.items() if k.startswith("ev:")}
+        if ev_plans:
+            lines.append(f"EV FLEET  {len(ev_plans)} session(s)")
+            for plan in ev_plans.values():
+                status = "OK" if plan["unmet_kwh"] < 1e-6 else f"SHORT {plan['unmet_kwh']:.1f} kWh"
+                lines.append(
+                    f"  {plan['name']:<20} {plan['delivered_kwh']:.1f}/{plan['required_kwh']:.1f} kWh "
+                    f"[{plan['window_start']} -> {plan['window_end']}]  {status}"
+                )
+        else:
+            lines.append("EV FLEET  none configured")
+
+        hvac = self.device_plans.get("hvac")
+        if hvac:
+            lines.append(
+                f"HVAC     {hvac['name']}\n"
+                f"  curtailed {hvac['curtailed_kwh']:.1f} kWh | rebounded {hvac['rebounded_kwh']:.1f} kWh | "
+                f"active {hvac['active_hours']}/{hvac['horizon_hours']} h | "
+                f"longest run {hvac['longest_run_hours']} h"
+            )
+        else:
+            lines.append("HVAC     none configured")
+
+        other = self.device_plans.get("other_electrical")
+        if other:
+            lines.append(
+                f"OTHER ELECTRICAL (lighting, plug loads, non-curtailed HVAC baseline — "
+                f"the forecast's non-flexible remainder; not independently metered)\n"
+                f"  avg {other['avg_kw']:.1f} kW | peak {other['peak_kw']:.1f} kW | "
+                f"total {other['total_kwh']:.1f} kWh over the horizon"
+            )
+
+        return "\n".join(lines)
