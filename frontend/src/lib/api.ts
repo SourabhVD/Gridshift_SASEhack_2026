@@ -31,6 +31,8 @@
  */
 
 import type {
+  BacktestDates,
+  BacktestReport,
   Action,
   ActionDecisionResponse,
   ActionPlan,
@@ -337,11 +339,20 @@ export function getBuildings(): Promise<BuildingsResponse> {
   return tryReal('buildings', real, mock);
 }
 
-/** GET /api/dashboard/summary?building_id= */
-export function getSummary(buildingId: string): Promise<DashboardSummary> {
+/**
+ * `date` names one of the real metered days the backend has on disk. Empty
+ * means whatever it is configured to serve, which is every mock's case and
+ * the default everywhere else.
+ */
+function withDate(path: string, date: string): string {
+  return date ? `${path}${path.includes('?') ? '&' : '?'}date=${encodeURIComponent(date)}` : path;
+}
+
+/** GET /api/dashboard/summary?building_id=&date= */
+export function getSummary(buildingId: string, date = ''): Promise<DashboardSummary> {
   const mock = () => mockServer.getSummary(buildingId);
   const real = () =>
-    request<DashboardSummary>(withBuilding('/api/dashboard/summary', buildingId), {
+    request<DashboardSummary>(withDate(withBuilding('/api/dashboard/summary', buildingId), date), {
       validate: SHAPE.summary,
     });
 
@@ -350,11 +361,11 @@ export function getSummary(buildingId: string): Promise<DashboardSummary> {
   return tryReal('summary', real, mock);
 }
 
-/** GET /api/forecast?building_id= */
-export function getForecast(buildingId: string): Promise<ForecastResponse> {
+/** GET /api/forecast?building_id=&date= */
+export function getForecast(buildingId: string, date = ''): Promise<ForecastResponse> {
   const mock = () => mockServer.getForecast(buildingId);
   const real = () =>
-    request<ForecastResponse>(withBuilding('/api/forecast', buildingId), {
+    request<ForecastResponse>(withDate(withBuilding('/api/forecast', buildingId), date), {
       validate: SHAPE.forecast,
     });
 
@@ -369,12 +380,12 @@ export function getForecast(buildingId: string): Promise<ForecastResponse> {
  * This call decides the whole run: if it falls back, the run id it returns is
  * 'mock-' prefixed and every later call for that run goes to the mock too.
  */
-export function startRun(buildingId: string): Promise<RunResponse> {
+export function startRun(buildingId: string, date = ''): Promise<RunResponse> {
   const mock = () => mockServer.startRun(buildingId);
   const real = () =>
     request<RunResponse>('/api/gridshift/run', {
       method: 'POST',
-      body: JSON.stringify({ building_id: buildingId }),
+      body: JSON.stringify({ building_id: buildingId, date }),
       validate: SHAPE.run,
     });
 
@@ -488,10 +499,38 @@ export function resetDemo(buildingId: string): Promise<ResetResponse> {
   })();
 }
 
+/**
+ * GET /api/backtests?building_id=
+ *
+ * There is no mock for this: the fixtures are one authored day and have no
+ * calendar behind them. An empty list is the honest answer and the dashboard
+ * simply offers no picker, which is what should happen when the backend is
+ * not serving real days either.
+ */
+export function getBacktestDates(buildingId: string): Promise<BacktestDates> {
+  const empty: BacktestDates = { building_id: buildingId, dates: [], serving: '' };
+  if (apiMode === 'mock') return Promise.resolve(empty);
+  const real = () =>
+    request<BacktestDates>(withBuilding('/api/backtests', buildingId));
+  if (apiMode === 'real') return real();
+  return real().catch(() => empty);
+}
+
+/** GET /api/reports/backtest?building_id= -- see the note above about mocks. */
+export function getBacktestReport(buildingId: string): Promise<BacktestReport | null> {
+  if (apiMode === 'mock') return Promise.resolve(null);
+  const real = () =>
+    request<BacktestReport>(withBuilding('/api/reports/backtest', buildingId));
+  if (apiMode === 'real') return real();
+  return real().catch(() => null);
+}
+
 export const api = {
   getBuildings,
   getSummary,
   getForecast,
+  getBacktestDates,
+  getBacktestReport,
   startRun,
   getEvents,
   getPlan,

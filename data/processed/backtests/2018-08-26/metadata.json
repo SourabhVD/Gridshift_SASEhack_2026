@@ -1,0 +1,49 @@
+{
+  "forecast_date_local": "2018-08-26",
+  "building_id": "6ee36e26-40d4-5408-b93a-840ad2fdd412",
+  "timezone": "America/Los_Angeles",
+  "algorithm": "LightGBM",
+  "selected_feature_set": "full_features",
+  "selected_features": [
+    "temperature_c",
+    "humidity_pct",
+    "wind_speed_mps",
+    "hour",
+    "day_of_week",
+    "day_of_year",
+    "month",
+    "is_weekend",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "temperature_squared",
+    "heating_degree",
+    "cooling_degree",
+    "load_lag_1",
+    "load_lag_2",
+    "load_lag_3",
+    "load_lag_24",
+    "load_lag_48",
+    "load_lag_168",
+    "rolling_mean_3h",
+    "rolling_mean_6h",
+    "rolling_mean_24h",
+    "rolling_std_24h"
+  ],
+  "number_of_features": 25,
+  "training_rows": 5479,
+  "target_start_utc": "2018-08-26 07:00:00+00:00",
+  "target_end_utc": "2018-08-27 07:00:00+00:00",
+  "weather_mode": "observed_historical",
+  "provenance": {
+    "load_sources": [
+      "ComStock"
+    ],
+    "weather_sources": [
+      "NOAA_NCEI_ISD"
+    ],
+    "missing_weather_hours_before_fill": 128,
+    "missing_weather_hours_after_fill": 69
+  }
+}

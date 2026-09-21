@@ -56,6 +56,7 @@ import {
   type ReactNode,
 } from 'react';
 import type {
+  BacktestReport,
   ActionPlan,
   AgentEvent,
   AgentToolName,
@@ -189,6 +190,15 @@ export interface GridShiftValue {
   activeTool: AgentToolName | null;
 
   /* ---- actions ---- */
+  /** Real metered days the backend can plan, oldest first. Empty in mock mode. */
+  backtestDates: string[];
+  /** The day being shown. '' means whatever the backend defaults to. */
+  selectedDate: string;
+  selectDate: (date: string) => Promise<void>;
+  /** Every available day solved. Null until asked for, or when unavailable. */
+  report: BacktestReport | null;
+  isReportLoading: boolean;
+  loadReport: () => Promise<void>;
   startRun: () => Promise<void>;
   approve: (actionId: string) => Promise<void>;
   reject: (actionId: string) => Promise<void>;
@@ -278,6 +288,15 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
   const [plan, setPlan] = useState<ActionPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const [backtestDates, setBacktestDates] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string>('');
+  const [report, setReport] = useState<BacktestReport | null>(null);
+  const [isReportLoading, setIsReportLoading] = useState(false);
+  /* Read by callbacks that must not be re-created when the date changes.
+     Written only where the date actually changes -- selectDate and the
+     bootstrap -- never during render. */
+  const selectedDateRef = useRef('');
 
   const [sites, setSites] = useState<Record<string, SiteState>>({});
   /* The world is the entry point. A remembered building decides WHICH site the
@@ -381,9 +400,10 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
   const loadDashboard = useCallback(
     async (id: string) => {
       try {
+        const date = selectedDateRef.current;
         const [nextSummary, nextForecast] = await Promise.all([
-          api.getSummary(id),
-          api.getForecast(id),
+          api.getSummary(id, date),
+          api.getForecast(id, date),
         ]);
         if (!mountedRef.current) return;
         setSummary(nextSummary);
@@ -480,6 +500,20 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       }
 
       await loadPortfolio(list, startId);
+
+      // Which real days the backend can plan. Not fatal if it cannot answer:
+      // an empty list simply means no picker, which is the right outcome in
+      // mock mode and on a backend serving authored curves.
+      try {
+        const listing = await api.getBacktestDates(startId);
+        if (!cancelled && mountedRef.current) {
+          setBacktestDates(listing.dates);
+          setSelectedDate(listing.serving);
+          selectedDateRef.current = listing.serving;
+        }
+      } catch {
+        /* no picker, no problem */
+      }
       if (!cancelled && mountedRef.current) setIsLoading(false);
     }
 
@@ -594,7 +628,7 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
 
     let id: string;
     try {
-      const res = await api.startRun(buildingId);
+      const res = await api.startRun(buildingId, selectedDateRef.current);
       if (!mountedRef.current) return;
       id = res.run_id;
       setRunId(id);
@@ -653,6 +687,38 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
     viewModeTouchedRef.current = false;
     setViewModeState('baseline');
   }, [pause, stopPolling]);
+
+  /**
+   * Show a different day.
+   *
+   * Clears the run first: a plan belongs to the day it was solved for, and
+   * leaving one on screen beside another day's chart is exactly the mismatch
+   * the backend was fixed to prevent.
+   */
+  const selectDate = useCallback(
+    async (date: string) => {
+      selectedDateRef.current = date;
+      setSelectedDate(date);
+      clearRun();
+      setIsLoading(true);
+      try {
+        await loadDashboard(buildingIdRef.current);
+      } finally {
+        if (mountedRef.current) setIsLoading(false);
+      }
+    },
+    [clearRun, loadDashboard],
+  );
+
+  const loadReport = useCallback(async () => {
+    setIsReportLoading(true);
+    try {
+      const next = await api.getBacktestReport(buildingIdRef.current);
+      if (mountedRef.current) setReport(next);
+    } finally {
+      if (mountedRef.current) setIsReportLoading(false);
+    }
+  }, []);
 
   const reset = useCallback(async () => {
     clearRun();
@@ -847,6 +913,12 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       flowsAt,
       currentFlows,
       activeTool,
+      backtestDates,
+      selectedDate,
+      selectDate,
+      report,
+      isReportLoading,
+      loadReport,
       startRun,
       approve,
       reject,
@@ -885,6 +957,12 @@ export function GridShiftProvider({ children }: { children: ReactNode }) {
       flowsAt,
       currentFlows,
       activeTool,
+      backtestDates,
+      selectedDate,
+      selectDate,
+      report,
+      isReportLoading,
+      loadReport,
       startRun,
       approve,
       reject,

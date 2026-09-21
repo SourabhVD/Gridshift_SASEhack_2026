@@ -165,6 +165,8 @@ class AgentEvent(Model):
 
 class RunRequest(Model):
     building_id: str
+    #: Which metered day to plan. Empty means whatever the server serves.
+    date: str = ""
 
 
 class RunResponse(Model):
@@ -241,3 +243,84 @@ class ResetRequest(Model):
 class ResetResponse(Model):
     ok: bool
     message: str
+
+
+# --------------------------------------------------------------------------- #
+# GET /api/backtests                                                           #
+# --------------------------------------------------------------------------- #
+
+
+class BacktestDates(Model):
+    """Which real days this building can be planned against."""
+
+    building_id: str
+    #: Oldest first. Empty when the server is not in backtest mode, which is
+    #: not an error: the dashboard then simply offers no picker.
+    dates: list[str]
+    #: The one being served right now, or "" if none.
+    serving: str
+
+
+# --------------------------------------------------------------------------- #
+# GET /api/reports/backtest                                                    #
+# --------------------------------------------------------------------------- #
+
+
+class ReportDay(Model):
+    """One metered day, put through the optimizer."""
+
+    date: str
+    baseline_peak_kw: float
+    optimized_peak_kw: float
+    peak_reduction_kw: float
+    baseline_cost_usd: float
+    optimized_cost_usd: float
+    energy_savings_usd: float
+    actions: int
+    #: The harness's own scoring for the day, when it recorded any.
+    mae_kw: float | None = None
+    mape_pct: float | None = None
+    r2: float | None = None
+
+
+class ReportSummary(Model):
+    """
+    The period those days add up to.
+
+    A demand charge is billed on the worst interval in the period, so
+    `demand_charge_usd` comes from the highest baseline peak against the
+    highest optimized one -- not from any single day. `best_day_claim_usd` is
+    what quoting the best day alone would have said, which is what a one-day
+    demo does.
+    """
+
+    days_covered: int
+    first_date: str
+    last_date: str
+    billed_peak_baseline_kw: float
+    billed_peak_optimized_kw: float
+    billed_peak_reduction_kw: float
+    demand_charge_usd_per_kw: float
+    demand_charge_usd: float
+    energy_savings_usd: float
+    total_savings_usd: float
+    mean_daily_peak_reduction_kw: float
+    best_day: str
+    best_day_peak_reduction_kw: float
+    best_day_claim_usd: float
+    best_day_overstates_by_usd: float
+    mean_mae_kw: float | None = None
+    mean_mape_pct: float | None = None
+    mean_r2: float | None = None
+    days_over_threshold: int
+    threshold_kw: float
+
+
+class BacktestReport(Model):
+    building_id: str
+    building_name: str
+    days: list[ReportDay]
+    #: Dates on disk this building could not be planned against.
+    skipped_dates: list[str]
+    #: None when no day was usable.
+    summary: ReportSummary | None

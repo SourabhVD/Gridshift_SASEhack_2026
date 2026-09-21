@@ -263,3 +263,69 @@ export interface ResetResponse {
   ok: boolean;
   message: string;
 }
+
+/** GET /api/backtests?building_id= */
+export interface BacktestDates {
+  building_id: string;
+  /** Oldest first. Empty when the backend is not serving real days. */
+  dates: string[];
+  /** The one in force, or '' when there are none. */
+  serving: string;
+}
+
+/** One metered day, put through the optimizer. */
+export interface ReportDay {
+  date: string;
+  baseline_peak_kw: number;
+  optimized_peak_kw: number;
+  peak_reduction_kw: number;
+  baseline_cost_usd: number;
+  optimized_cost_usd: number;
+  energy_savings_usd: number;
+  actions: number;
+  /** The harness's own scoring, when it recorded any. */
+  mae_kw?: number | null;
+  mape_pct?: number | null;
+  r2?: number | null;
+}
+
+/**
+ * The period those days add up to.
+ *
+ * A demand charge is billed on the worst interval in the period, so
+ * `demand_charge_usd` comes from the highest baseline peak against the highest
+ * optimized one -- not from any single day. `best_day_claim_usd` is what
+ * quoting the best day alone would say, which is what a one-day demo does.
+ */
+export interface ReportSummary {
+  days_covered: number;
+  first_date: string;
+  last_date: string;
+  billed_peak_baseline_kw: number;
+  billed_peak_optimized_kw: number;
+  billed_peak_reduction_kw: number;
+  demand_charge_usd_per_kw: number;
+  demand_charge_usd: number;
+  energy_savings_usd: number;
+  total_savings_usd: number;
+  mean_daily_peak_reduction_kw: number;
+  best_day: string;
+  best_day_peak_reduction_kw: number;
+  best_day_claim_usd: number;
+  best_day_overstates_by_usd: number;
+  mean_mae_kw?: number | null;
+  mean_mape_pct?: number | null;
+  mean_r2?: number | null;
+  days_over_threshold: number;
+  threshold_kw: number;
+}
+
+/** GET /api/reports/backtest?building_id= */
+export interface BacktestReport {
+  building_id: string;
+  building_name: string;
+  days: ReportDay[];
+  skipped_dates: string[];
+  /** Null when no day was usable. */
+  summary: ReportSummary | null;
+}
