@@ -111,6 +111,9 @@ def main() -> None:
         print(result.summary())
         print(f"cost  baseline ${result.baseline_cost['total']:.2f} "
               f"-> optimized ${result.optimized_cost['total']:.2f}")
+        print()
+        print(result.format_plan())
+        print()
         if any(result.violations.values()):
             print(f"violations      {result.violations}")
         print(f"solver          {result.solver['name']} {result.solver['wall_time_ms']} ms, "

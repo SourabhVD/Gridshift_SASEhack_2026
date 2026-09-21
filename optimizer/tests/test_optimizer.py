@@ -167,3 +167,61 @@ def test_week_horizon_runs():
     )
     assert result.status in ("OPTIMAL", "FEASIBLE")
     assert result.optimized_peak_kw < result.baseline_peak_kw
+
+
+def test_device_plans_cover_each_configured_device():
+    stamps = timestamps()
+    evs = [
+        EVSpec(asset_id="ev1", name="Fleet EV 1", max_charge_kw=11, energy_required_kwh=30,
+               available_from=stamps[2], available_until=stamps[12]),
+        EVSpec(asset_id="ev2", name="Fleet EV 1", max_charge_kw=11, energy_required_kwh=20,
+               available_from=stamps[5], available_until=stamps[15]),
+    ]
+    hvac = HVACSpec(asset_id="h1", name="Roof HVAC", max_curtail_fraction=0.1, max_consecutive_hours=2)
+    result = optimize(make_request(battery=battery(), evs=evs, hvac=hvac))
+
+    assert "battery" in result.device_plans
+    assert result.device_plans["battery"]["capacity_kwh"] == 200
+
+    ev_plans = [v for k, v in result.device_plans.items() if k.startswith("ev:")]
+    assert len(ev_plans) == 2
+    assert {p["required_kwh"] for p in ev_plans} == {30, 20}
+
+    assert result.device_plans["hvac"]["name"] == "Roof HVAC"
+
+    assert "other_electrical" in result.device_plans
+    assert result.device_plans["other_electrical"]["peak_kw"] == pytest.approx(
+        result.schedule.forecast_load_kw.max()
+    )
+
+
+def test_schedule_has_named_ev_columns_and_other_electrical():
+    stamps = timestamps()
+    evs = [
+        EVSpec(asset_id="ev1", name="Fleet EV 1", max_charge_kw=11, energy_required_kwh=30,
+               available_from=stamps[2], available_until=stamps[12]),
+        EVSpec(asset_id="ev2", name="Fleet EV 1", max_charge_kw=11, energy_required_kwh=20,
+               available_from=stamps[5], available_until=stamps[15]),
+    ]
+    result = optimize(make_request(evs=evs, hvac=HVACSpec(asset_id="h", name="hvac")))
+    cols = result.schedule.columns
+    assert "ev_Fleet_EV_1_kw" in cols
+    assert "ev_Fleet_EV_1_2_kw" in cols  # duplicate name gets deduped
+    assert "other_electrical_kw" in cols
+    # per-session columns sum to the aggregate column
+    total = result.schedule["ev_Fleet_EV_1_kw"] + result.schedule["ev_Fleet_EV_1_2_kw"]
+    assert total.to_numpy() == pytest.approx(result.schedule["ev_charge_kw"].to_numpy())
+
+
+def test_format_plan_lists_every_device():
+    result = optimize(make_request(
+        battery=battery(), evs=[EVSpec(asset_id="e", name="Car", max_charge_kw=7,
+                                        energy_required_kwh=10, available_from=timestamps()[0],
+                                        available_until=timestamps()[10])],
+        hvac=HVACSpec(asset_id="h", name="hvac"),
+    ))
+    text = result.format_plan()
+    assert "BATTERY" in text
+    assert "EV FLEET" in text and "Car" in text
+    assert "HVAC" in text
+    assert "OTHER ELECTRICAL" in text

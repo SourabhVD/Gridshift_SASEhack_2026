@@ -123,6 +123,19 @@ def _values(variables) -> np.ndarray:
     return np.array([v.solution_value() for v in variables], dtype=float)
 
 
+def _unique_labels(names: list[str]) -> list[str]:
+    """Sanitize names into unique, column-safe labels (spaces/punctuation -> _)."""
+    import re
+
+    seen: dict[str, int] = {}
+    labels = []
+    for name in names:
+        base = re.sub(r"[^0-9a-zA-Z]+", "_", name).strip("_") or "session"
+        seen[base] = seen.get(base, 0) + 1
+        labels.append(base if seen[base] == 1 else f"{base}_{seen[base]}")
+    return labels
+
+
 def _build_result(request, blocks, net, status_name, solver) -> OptimizationResult:
     hours = request.hours
     schedule = pd.DataFrame(
@@ -135,6 +148,7 @@ def _build_result(request, blocks, net, status_name, solver) -> OptimizationResu
     )
 
     violations = {"unmet_ev_kwh": 0.0, "hvac_curtailed_kwh": 0.0}
+    device_plans: dict[str, dict] = {}
     by_name = {block.name.split(":")[0]: block for block in blocks}
 
     battery = by_name.get("battery")
@@ -146,16 +160,40 @@ def _build_result(request, blocks, net, status_name, solver) -> OptimizationResu
         schedule["battery_discharge_kw"] = discharge.round(3)
         schedule["battery_soc_kwh"] = soc.round(3)
         schedule["battery_soc_pct"] = (100 * soc / request.battery.capacity_kwh).round(2)
+        device_plans["battery"] = {
+            "name": request.battery.name,
+            "capacity_kwh": request.battery.capacity_kwh,
+            "energy_charged_kwh": round(float(charge.sum()), 3),
+            "energy_discharged_kwh": round(float(discharge.sum()), 3),
+            "soc_start_pct": request.battery.initial_soc_pct,
+            "soc_end_pct": round(float(schedule["battery_soc_pct"].iloc[-1]), 1),
+            "active_hours": int(((charge > 1e-6) | (discharge > 1e-6)).sum()),
+            "horizon_hours": hours,
+        }
     else:
         schedule[["battery_charge_kw", "battery_discharge_kw", "battery_soc_kwh", "battery_soc_pct"]] = 0.0
 
     ev_block = by_name.get("ev_fleet")
     if ev_block is not None and ev_block.variables["draw_kw"]:
         draws = np.zeros(hours)
-        for asset_id, variables in ev_block.variables["draw_kw"].items():
-            values = _values(variables)
+        session_ids = list(ev_block.variables["draw_kw"].keys())
+        name_by_id = {spec.asset_id: spec.name for spec in request.evs}
+        labels = _unique_labels([name_by_id.get(sid, sid) for sid in session_ids])
+        for asset_id, label in zip(session_ids, labels):
+            values = _values(ev_block.variables["draw_kw"][asset_id])
             draws += values
-            schedule[f"ev_{asset_id}_kw"] = values.round(3)
+            schedule[f"ev_{label}_kw"] = values.round(3)
+            spec = next((s for s in request.evs if s.asset_id == asset_id), None)
+            unmet = float(ev_block.variables["unmet_kwh"][asset_id].solution_value())
+            if spec is not None:
+                device_plans[f"ev:{asset_id}"] = {
+                    "name": spec.name,
+                    "required_kwh": spec.energy_required_kwh,
+                    "delivered_kwh": round(spec.energy_required_kwh - unmet, 3),
+                    "unmet_kwh": round(unmet, 3),
+                    "window_start": spec.available_from.isoformat(sep=" ", timespec="minutes"),
+                    "window_end": spec.available_until.isoformat(sep=" ", timespec="minutes"),
+                }
         schedule["ev_charge_kw"] = draws.round(3)
         violations["unmet_ev_kwh"] = round(
             float(sum(v.solution_value() for v in ev_block.variables["unmet_kwh"].values())), 3
@@ -170,6 +208,19 @@ def _build_result(request, blocks, net, status_name, solver) -> OptimizationResu
         schedule["hvac_curtail_kw"] = curtail.round(3)
         schedule["hvac_rebound_kw"] = rebound.round(3)
         violations["hvac_curtailed_kwh"] = round(float(curtail.sum()), 3)
+        active = curtail > 1e-6
+        longest = current = 0
+        for is_active in active:
+            current = current + 1 if is_active else 0
+            longest = max(longest, current)
+        device_plans["hvac"] = {
+            "name": request.hvac.name,
+            "curtailed_kwh": round(float(curtail.sum()), 3),
+            "rebounded_kwh": round(float(rebound.sum()), 3),
+            "active_hours": int(active.sum()),
+            "horizon_hours": hours,
+            "longest_run_hours": int(longest),
+        }
     else:
         schedule[["hvac_curtail_kw", "hvac_rebound_kw"]] = 0.0
 
@@ -178,6 +229,18 @@ def _build_result(request, blocks, net, status_name, solver) -> OptimizationResu
 
     baseline = request.forecast_load_kw + unmanaged_ev_profile(request.evs, request.timestamps)
     schedule["baseline_load_kw"] = baseline.round(3)
+
+    # "Other main electrical things": whatever the whole-building forecast
+    # already contains that isn't the battery/EV/HVAC adjustments above —
+    # lighting, plug loads, and any HVAC baseline that wasn't curtailed. The
+    # ML forecast is a single aggregate meter reading, not sub-metered by end
+    # use, so this is the forecast itself, not an independently derived number.
+    schedule["other_electrical_kw"] = schedule["forecast_load_kw"].round(3)
+    device_plans["other_electrical"] = {
+        "avg_kw": round(float(schedule["forecast_load_kw"].mean()), 3),
+        "peak_kw": round(float(schedule["forecast_load_kw"].max()), 3),
+        "total_kwh": round(float(schedule["forecast_load_kw"].sum()), 3),
+    }
 
     baseline_cost = cost_of_profile(baseline, request)
     optimized_cost = cost_of_profile(optimized, request)
@@ -196,6 +259,7 @@ def _build_result(request, blocks, net, status_name, solver) -> OptimizationResu
         optimized_cost=optimized_cost,
         savings=savings,
         violations=violations,
+        device_plans=device_plans,
         solver={
             "name": request.options.solver_name,
             "wall_time_ms": solver.WallTime(),
