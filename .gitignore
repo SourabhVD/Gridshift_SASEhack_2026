@@ -46,3 +46,14 @@ data/processed/*
 # neither belongs in the history.
 optimizer/output/
 backend_truth.json
+
+# The backtest artifacts the backend actually reads: three small files a day,
+# about 4 KB each. They are the demo's data -- without them a clone falls back
+# to the authored fixtures and none of the real-day work is visible. The
+# trained bundle written beside them is 1.4 MB a day, is regenerable from
+# `ml/evaluate_forecast_date.py --date`, and stays out.
+!data/processed/backtests/
+data/processed/backtests/*/*
+!data/processed/backtests/*/forecast_vs_actual.csv
+!data/processed/backtests/*/metrics.json
+!data/processed/backtests/*/metadata.json

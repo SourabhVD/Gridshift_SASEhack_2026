@@ -1,0 +1,17 @@
+{
+  "MAE_kW": 3.3637602055867633,
+  "RMSE_kW": 5.359478172002782,
+  "MAPE_pct": 3.5167648633144797,
+  "R2": 0.9865004638130718,
+  "peak_threshold_kw": 107.38379287719701,
+  "n_true_peaks": 6,
+  "peak_precision": 1.0,
+  "peak_recall": 1.0,
+  "peak_f1": 1.0,
+  "actual_peak_kw": 159.987937927246,
+  "predicted_peak_kw": 149.942,
+  "peak_magnitude_error_kw": 10.045937927246001,
+  "actual_peak_time": "2018-08-09 18:00:00+00:00",
+  "predicted_peak_time": "2018-08-09 20:00:00+00:00",
+  "peak_timing_error_hours": 2.0
+}
