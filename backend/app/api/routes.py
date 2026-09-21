@@ -22,6 +22,8 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from ..fixtures import FIXTURES
 from ..models.schemas import (
+    BacktestDates,
+    BacktestReport,
     ActionDecisionResponse,
     ActionPlan,
     Building,
@@ -35,6 +37,7 @@ from ..models.schemas import (
     RunResponse,
 )
 from ..services import forecast as forecast_service
+from ..services import reports as reports_service
 from ..agent.runner import execute_run
 from ..services.forecast import UnknownBuilding
 from ..store import Conflict, NotFound, store
@@ -91,18 +94,50 @@ def get_buildings() -> BuildingsResponse:
 # --------------------------------------------------------------------------- #
 
 
-@router.get("/dashboard/summary", response_model=DashboardSummary)
-def get_summary(building_id: str = Query(...)) -> DashboardSummary:
+@router.get("/backtests", response_model=BacktestDates)
+def get_backtests(building_id: str = Query(...)) -> BacktestDates:
+    """Every real day this building can be planned against."""
     try:
-        return DashboardSummary(**forecast_service.build_summary(building_id))
+        fixture = forecast_service.require_fixture(building_id)
+    except UnknownBuilding as exc:
+        raise _not_found(exc) from exc
+    dates = forecast_service.available_dates()
+    serving = forecast_service.serving_date() or forecast_service.busiest_date(fixture)
+    return BacktestDates(building_id=fixture.id, dates=dates, serving=serving if dates else "")
+
+
+@router.get("/reports/backtest", response_model=BacktestReport)
+def get_backtest_report(building_id: str = Query(...)) -> BacktestReport:
+    """
+    Every available day solved, and the period they add up to.
+
+    Deliberately not called "performance": nothing here was dispatched. It is
+    what the optimizer would have done to days that really happened.
+    """
+    try:
+        return BacktestReport(**reports_service.backtest_report(building_id))
+    except UnknownBuilding as exc:
+        raise _not_found(exc) from exc
+
+
+@router.get("/dashboard/summary", response_model=DashboardSummary)
+def get_summary(
+    building_id: str = Query(...), date: str = Query("")
+) -> DashboardSummary:
+    try:
+        with forecast_service.serve_date(date):
+            return DashboardSummary(**forecast_service.build_summary(building_id))
     except UnknownBuilding as exc:
         raise _unprocessable(exc) from exc
 
 
 @router.get("/forecast", response_model=ForecastResponse)
-def get_forecast(building_id: str = Query(...)) -> ForecastResponse:
+def get_forecast(
+    building_id: str = Query(...), date: str = Query("")
+) -> ForecastResponse:
     try:
-        return ForecastResponse(**forecast_service.build_forecast(building_id))
+        with forecast_service.serve_date(date):
+            return ForecastResponse(**forecast_service.build_forecast(building_id))
     except UnknownBuilding as exc:
         raise _unprocessable(exc) from exc
 
@@ -135,7 +170,12 @@ async def start_run(body: RunRequest) -> RunResponse:
     # Runs are keyed on the canonical slug, so a run started with the UUID form
     # of the id is still the run that a reset by slug clears.
     run = store.create_run(fixture.id)
-    task = asyncio.create_task(execute_run(run["run_id"], fixture.id))
+    # create_task copies the context as it stands here, so the run keeps this
+    # date for its whole life without being handed it. That matters: the agent
+    # reads the forecast and the optimizer solves it several seconds apart, and
+    # they must not end up on different days.
+    with forecast_service.serve_date(body.date):
+        task = asyncio.create_task(execute_run(run["run_id"], fixture.id))
     _RUNNING[fixture.id] = task
     # Only evict our own entry: a task that finishes after being superseded
     # must not remove the entry belonging to the run that replaced it.

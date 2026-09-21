@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import logging
 import sys
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
@@ -203,6 +205,120 @@ def _predict_with_ml(fixture: BuildingFixture) -> list[float] | None:
 # --------------------------------------------------------------------------- #
 
 
+#: The day this request is about. Empty means "whatever the server is
+#: configured to serve", which is the demo's default and every test's.
+_SERVING_DATE: ContextVar[str] = ContextVar("gridshift_serving_date", default="")
+
+#: A scale factor pinned across several days, or 0.0 for "per day".
+#:
+#: `onto_site_scale` maps one day's peak onto the site's. Over a period that
+#: has to be a single factor or every day comes out tying the record, which is
+#: not a month and quietly destroys the only number a month is for.
+_PERIOD_SCALE: ContextVar[float] = ContextVar("gridshift_period_scale", default=0.0)
+
+
+def serving_date() -> str:
+    """The backtest date in force right now."""
+    return _SERVING_DATE.get() or get_settings().backtest_date
+
+
+@contextmanager
+def period_scale(factor: float):
+    """Pin one factor for every day solved inside this block."""
+    token = _PERIOD_SCALE.set(factor)
+    try:
+        yield
+    finally:
+        _PERIOD_SCALE.reset(token)
+
+
+#: Memoised period factor, keyed on the set of dates it was derived from.
+_PERIOD_FACTOR_CACHE: dict[tuple[str, ...], float] = {}
+
+
+def period_factor(fixture: BuildingFixture) -> float:
+    """
+    One factor for every day on disk, from the busiest of them.
+
+    Computed once per set of dates: it reads every backtest to find the peak,
+    which is cheap but not free, and the set only changes when somebody adds a
+    day. Returns 0.0 when there is nothing to scale against, which callers
+    read as "fall back to per-day".
+    """
+    dates = tuple(available_dates())
+    if len(dates) < 2:
+        return 0.0
+    cached = _PERIOD_FACTOR_CACHE.get(dates)
+    if cached is not None:
+        return cached
+    peaks = [raw_peak_kw(date) for date in dates]
+    busiest = max(peaks) if peaks else 0.0
+    factor = (max(fixture.baseline_grid) / busiest) if busiest > 0 else 0.0
+    _PERIOD_FACTOR_CACHE[dates] = factor
+    return factor
+
+
+def busiest_date(fixture: BuildingFixture) -> str:
+    """
+    The day that set the period's peak -- the one the bill is actually about.
+
+    A better default than "the latest on disk": now that every day is scaled
+    by one factor, most of them are quiet, and opening the demo on a Tuesday
+    where nothing happens shows the product doing nothing. This is also the
+    honest choice, not just the flattering one: it is the day a facility
+    manager would be looking at.
+    """
+    dates = available_dates()
+    if len(dates) < 2:
+        return dates[0] if dates else ""
+    return max(dates, key=raw_peak_kw)
+
+
+def raw_peak_kw(date: str) -> float:
+    """The day's predicted peak in the building's real kW, before any mapping."""
+    settings = get_settings()
+    try:
+        result = backtest_reader.load(settings.backtest_path, date)
+    except backtest_reader.BacktestUnavailable:
+        return 0.0
+    return max(result.predicted_kw) if result.predicted_kw else 0.0
+
+
+@contextmanager
+def serve_date(date: str):
+    """
+    Pin one date for everything that runs inside this block.
+
+    A context variable rather than a parameter threaded through five layers,
+    because the requirement is not "the forecast can take a date" -- it is
+    that the forecast, the optimizer and the agent can never be looking at
+    different days. They diverged once already: the chart drew the backtested
+    day while the plan underneath solved the authored fixture, and because the
+    backtest is scaled onto the site's own peak both reported the same 522 kW
+    and nothing looked wrong. One variable that all three read has no way to
+    come apart.
+
+    asyncio copies the context when a task is created, so a run started inside
+    this block keeps the date for its whole life without being handed it.
+    """
+    token = _SERVING_DATE.set(date or "")
+    try:
+        yield
+    finally:
+        _SERVING_DATE.reset(token)
+
+
+def available_dates() -> list[str]:
+    """Every backtest date on disk, oldest first. Empty if the mode is off."""
+    settings = get_settings()
+    if settings.forecast_mode != "backtest":
+        return []
+    try:
+        return backtest_reader.available(settings.backtest_path)
+    except Exception:  # noqa: BLE001 - a missing directory is not an error here
+        return []
+
+
 def _load_backtest(fixture: BuildingFixture) -> backtest_reader.Backtest | None:
     """
     The stored backtest for this site, or None to fall back.
@@ -218,9 +334,14 @@ def _load_backtest(fixture: BuildingFixture) -> backtest_reader.Backtest | None:
         return None
 
     try:
-        result = backtest_reader.load(settings.backtest_path, settings.backtest_date)
+        # No date asked for and no date configured: serve the busiest day
+        # rather than the last one on disk.
+        date = serving_date() or busiest_date(fixture)
+        result = backtest_reader.load(settings.backtest_path, date)
     except backtest_reader.BacktestUnavailable as exc:
-        if not _BACKTEST_WARNED:
+        # The latch stops a 1 s poll logging the same line forever, but a date
+        # the caller asked for by name is worth saying out loud every time.
+        if not _BACKTEST_WARNED or _SERVING_DATE.get():
             _BACKTEST_WARNED = True
             log.warning(
                 "GRIDSHIFT_FORECAST=backtest but no usable backtest (%s); "
@@ -294,7 +415,10 @@ def current_curve(fixture: BuildingFixture) -> Curve:
             # rest of the app -- optimizer levers, device facts, the scripted
             # narration, the plan's impact chart -- keeps working against
             # numbers it was authored for.
-            scale = onto_site_scale(fixture, result.predicted_kw)
+            # Explicit pin first, then the calendar's own factor, and only
+            # a single-day deployment falls back to scaling this day alone.
+            pinned = _PERIOD_SCALE.get() or period_factor(fixture)
+            scale = pinned if pinned > 0 else onto_site_scale(fixture, result.predicted_kw)
             grid = [round1(v * scale) for v in result.predicted_kw]
             # Measured load stops at "now", matching `metered_actuals` and what
             # the contract says the field means. The file knows the whole day;

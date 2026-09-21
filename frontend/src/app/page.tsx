@@ -43,8 +43,10 @@ import { useEffect, useState, type CSSProperties } from 'react';
 import clsx from 'clsx';
 
 import { ActionPlan } from '@/components/ActionPlan';
+import { BacktestReport } from '@/components/BacktestReport';
 import { AgentActivity } from '@/components/AgentActivity';
 import { BuildingSelector } from '@/components/BuildingSelector';
+import { DayPicker } from '@/components/DayPicker';
 import { DemandChart } from '@/components/DemandChart';
 import { EnergyFlowPanel } from '@/components/EnergyFlowPanel';
 import { ImpactChart } from '@/components/ImpactChart';
@@ -113,6 +115,8 @@ export default function Page() {
           <span className="hidden h-4 w-px bg-line-2 sm:block" />
 
           <BuildingSelector />
+
+          <DayPicker />
 
           <div className="ml-auto flex items-center gap-3">
             <DataSourceBadge />
@@ -202,6 +206,8 @@ export default function Page() {
             <AgentActivity />
           </div>
         </div>
+
+        <BacktestReport />
       </main>
     </div>
   );

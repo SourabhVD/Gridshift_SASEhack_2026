@@ -534,3 +534,67 @@ def test_the_narration_does_not_print_a_negative_saving_as_a_fall(backtest_mode)
     summary = fixture.plan_summary(solve(fixture))
     assert "$-" not in summary, summary
     assert "falls $-" not in summary
+
+
+# --------------------------------------------------------------------------- #
+# Asking for a day                                                             #
+# --------------------------------------------------------------------------- #
+
+
+def test_a_requested_date_reaches_the_forecast_and_the_plan(backtest_mode, client) -> None:
+    """
+    The date on the request has to reach BOTH sides, or they diverge.
+
+    A second day is written here so the two are distinguishable: without it,
+    a date parameter that did nothing at all would still pass.
+    """
+    # A different SHAPE, not a different magnitude: the served curve is mapped
+    # onto the site's own peak, so a day that is a pure multiple of another
+    # comes out identical after scaling. Reversing the profile moves the peak
+    # to a different hour, which scaling cannot erase.
+    write_backtest(backtest_mode, date="2018-07-16", predicted=PREDICTED[::-1],
+                   actual=ACTUAL[::-1])
+
+    listing = client.get(f"/api/backtests?building_id={OFFICE}").json()
+    assert listing["dates"] == ["2018-07-15", "2018-07-16"]
+
+    first = client.get(f"/api/forecast?building_id={OFFICE}&date=2018-07-15").json()
+    second = client.get(f"/api/forecast?building_id={OFFICE}&date=2018-07-16").json()
+    a = [p["predicted_load_kw"] for p in first["points"]]
+    b = [p["predicted_load_kw"] for p in second["points"]]
+    assert a != b, "the date parameter changed nothing"
+
+    # And the plan for a day is solved against that day, not another one.
+    run = client.post("/api/gridshift/run", json={"building_id": OFFICE, "date": "2018-07-16"}).json()
+    poll_until_complete(client, run["run_id"])
+    plan = client.get(f"/api/gridshift/{run['run_id']}/plan").json()
+    assert [p["baseline_kw"] for p in plan["impact"]] == b
+
+
+def test_an_unknown_date_falls_back_rather_than_failing(backtest_mode, client) -> None:
+    """A demo does not 500 because somebody typed a date that is not there."""
+    response = client.get(f"/api/forecast?building_id={OFFICE}&date=1999-01-01")
+    assert response.status_code == 200
+    assert len(response.json()["points"]) == 24
+
+
+def test_the_report_bills_the_period_not_the_best_day(backtest_mode) -> None:
+    """
+    The demand charge is the worst interval in the period, on both sides.
+
+    Quoting the best day's cut is what a one-day demo does and it overstates,
+    because the day you shaved hardest is not necessarily the day that set the
+    bill. The report has to carry both numbers or it is just a nicer-looking
+    single-day claim.
+    """
+    from app.services.reports import backtest_report
+
+    write_backtest(backtest_mode, date="2018-07-16", predicted=PREDICTED[::-1],
+                   actual=ACTUAL[::-1])
+
+    report = backtest_report(OFFICE)
+    summary = report["summary"]
+    assert summary["days_covered"] == 2
+    assert summary["billed_peak_baseline_kw"] == max(d["baseline_peak_kw"] for d in report["days"])
+    assert summary["billed_peak_optimized_kw"] == max(d["optimized_peak_kw"] for d in report["days"])
+    assert summary["best_day_claim_usd"] >= summary["demand_charge_usd"]
